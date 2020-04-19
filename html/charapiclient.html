@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+<body style="overflow:hidden">
+
+<script src="charapiclient.js"></script>
+
+<div id="myDiv" style="width:250px; height:200px;"></div>
+
+<script>
+// Initialize your character in a div
+var character;
+document.addEventListener("DOMContentLoaded", function() {
+    character = CharApiClient.setupDiv("myDiv", {
+        width:250,
+        height:200,
+        // TODO: Replace this with your own endpoint on your own server. 
+        endpoint:"http://localhost:3000/animate",
+        // Variable parameters. If your api works without authentication, e.g. if your page is accessible without a login, then it is wise 
+        // to fix as many parameters as you can in your server code, including a background with a logo, if you can, 
+        // in order to minimize the attractiveness of your endpoint for scammers. (CORS helps with this, but it can still be defeated.)
+        character:"SusanHead",
+        // Increment the 'cache' value if you make changes to the parameters you fix in your server.
+        // Even if you delete your server-side cache, your clients may have images in their client cache. Incrementing the
+        // cache number is a simple way to ensure that neither client or server-cached images are accidentally used.
+        cache:1
+    });
+})
+
+// Optionally add some event listeners - you add the listener to the div that holds the character
+document.getElementById("myDiv").addEventListener("characterLoaded", function() {console.log("characterLoaded")});
+document.getElementById("myDiv").addEventListener("autoStart", function() {console.log("autoStart")});
+document.getElementById("myDiv").addEventListener("playComplete", function() {console.log("playComplete")});
+document.getElementById("myDiv").addEventListener("embeddedCommand", function() {console.log("embeddedCommand")});
+</script>
+
+<!-- Sample API calls. Successive dynamicPlay calls are queued up for back-to-back play. Use character.stop() to smooth-stop. -->
+<br><br>
+<a href="javascript:character.dynamicPlay({do:'happy'})">[happy]</a>
+<br><br>
+<a href="javascript:character.dynamicPlay({do:'look-right', say:'Look over here.'})">[look-right] Look over here.</a>
+<br><br>
+<input type="text" id="myInput"/>
+<a href="javascript:character.dynamicPlay({say:document.getElementById('myInput').value})">speak</a>
+(<a href="javascript:character.preloadDynamicPlay({say:document.getElementById('myInput').value})">preload</a>, 
+<a href="javascript:character.stop()">stop</a>)
+
+</body>
+</html>
