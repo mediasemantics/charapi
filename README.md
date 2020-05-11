@@ -9,9 +9,9 @@ For a detailed introduction to the Character API, please read the [Character API
 You can see the Reference Implementation running [here](https://mediasemantics.com/charapiclient.html). 
 
 ## Requirements
-This README assumes that you are able to view html pages using a local web server (i.e. using a url that begins with http://localhost) and that you are able to run NodeJS. 
+This README assumes that you are able to view html pages using a local web server (i.e. using a url that begins with http://localhost) and that you are able to run Node.js. 
 If you prefer, you can also install it directly on a web server. Please see this [tutorial](https://www.mediasemantics.com/apitutorial2.html) for tips on
-setting up an AWS EC2 instance using Apache and NodeJS.
+setting up an AWS EC2 instance using Apache and Node.js.
 
 ## Obtaining keys
 Use this [AWS Markeplace](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ) page to add the
@@ -44,9 +44,9 @@ Create a cache subdirectory:
 mkdir cache
 ```
 
-Modify the charapi.js file to add your Character API and AWS Polly access credentials.
+Modify the server.js file to add your Character API and AWS Polly access credentials.
 ```
-nano tts.js
+nano server.js
 ```
 Replace 'xxxxxxxx' with the 8 digit key that was mailed to you when you signed up for the Character API.
 

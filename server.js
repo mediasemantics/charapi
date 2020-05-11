@@ -25,7 +25,7 @@ app.use(bodyParser.json({limit: '1mb'}));
 app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
 // The Character API endpoint
-var urlAnimate = "http://characterapi.com/animate";
+var urlAnimate = "http://mediasemantics.com/animate";
 
         
 app.get('/animate', function(req, res, next) {
@@ -241,7 +241,7 @@ function checkInFlight(req, res, filebase, type, format, n) {
         finish(req, res, filebase, type, format);
     }
     else if (n > 100) { // 10sec
-        console.log("IN-FLIGHT TIMEOUT"); res.statusCode = 500; res.setHeader('content-type', 'text/plain'); res.write(err); res.end(); return;
+        console.log("IN-FLIGHT TIMEOUT"); res.statusCode = 500; res.setHeader('content-type', 'text/plain'); res.write("timeout"); res.end(); return;
     }
     else setTimeout(function() {checkInFlight(req, res, filebase, type, format, n+1)}, 100);
 }
