@@ -37,13 +37,13 @@ app.get('/animate', function(req, res, next) {
     // TODO - delete this line if your character is always the same
     if (req.query.character) character = req.query.character
     
-    // These parameters are derived from the character
+    // These parameters can be derived from the character if they are not supplied
     var charobj = characterObject(character);
     var charstyleobj = characterStyleObject(charobj.style);
-	var width = charstyleobj.naturalWidth;
-	var height = charstyleobj.naturalHeight;
-	var version = charobj.version;
-	var format = (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
+	var width = req.query.width || charstyleobj.naturalWidth;
+	var height = req.query.height || charstyleobj.naturalHeight;
+	var version = req.query.version || charobj.version;
+	var format = req.query.format || (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
     
     // Determine an appropriate voice for your character - or you can fix it here instead
     var voice = charobj.defaultVoice;
@@ -62,7 +62,6 @@ app.get('/animate', function(req, res, next) {
 		"height":height.toString(),
 		"charx":"0",
 		"chary":"0",
-		"webgl":"true",
 		"fps":"24",
 		"quality":"95",
 		"backcolor":"ffffff"
@@ -75,6 +74,7 @@ app.get('/animate', function(req, res, next) {
     if (req.query.charx) o.charx = req.query.charx.toString();
     if (req.query.chary) o.chary = req.query.chary.toString();
     if (req.query.lipsync) o.lipsync = req.query.lipsync;
+    if (req.query.initialstate) o.initialstate = req.query.initialstate;
 
     // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
     // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
@@ -97,7 +97,7 @@ app.get('/animate', function(req, res, next) {
 
     // Simple mechanism to deal with the possibility of two near-simultaneous uncached requests with same parameters
     if (g_inFlight[filebase]) {
-        setTimeout(function() {checkInFlight(req, res, filebase, type, format, 1)}, 100);
+        setTimeout(function() {checkInFlight(req, res, filebase, type, o.format, 1)}, 100);
         return;
     }
     
@@ -464,6 +464,7 @@ function characterObject(id) {
             return characters[i];
     return null;
 }
+
 
 app.listen(3000, function() {
   console.log('Listening on port 3000');

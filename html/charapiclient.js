@@ -1,7 +1,7 @@
 'use strict';
 (function(lib, $) {
     lib.instances = {};
-    
+
     // Init/cleanup api attaches a character to a div
     lib.setupDiv = function(divid, params) {
         lib.cleanupDiv(divid);
@@ -9,7 +9,7 @@
         return lib.instances[divid];
     }
     lib.cleanupDiv = function(divid) {
-    	var that = lib.instances[divid];
+        var that = lib.instances[divid];
         if (that) {
             that.cleanup();
             delete lib.instances[divid];
@@ -22,7 +22,6 @@
             if (!this[0]) return console.log("charapiclient unknown div");
             if (!this[0].id) return console.log("charapiclient div must have an id");
             if (typeof arguments[0] === 'object') {
-                lib.cleanupDiv(this[0].id); // so we can safely reinit
                 var settings = $.extend({}, arguments[0]);
                 lib.setupDiv(this[0].id, settings.userid, settings.moduleid, settings);
             }
@@ -47,14 +46,14 @@
     }
 
     window.AudioContext = window.AudioContext || window.webkitAudioContext;
-    
+
 })(CharApiClient = CharApiClient||{}, window["jQuery"]);
 var CharApiClient;
 
 function CharApiClient(divid, params) {
     var that = this;
     if (!params.endpoint) console.log("missing parameter endpoint");
-            
+
     var version;
     var messageid;
     var fade = true;            // Whether we fade-in the opening scene - true by default but can be overridden in params
@@ -63,6 +62,7 @@ function CharApiClient(divid, params) {
     var playShield = false;     // true if play shield is up
     var idleType = "normal";
     var bobType = "normal";
+    var saveState = false;
 
     function resetOuterVars() {
         fade = true;
@@ -71,11 +71,12 @@ function CharApiClient(divid, params) {
         playShield = false;
         idleType = "normal";
         bobType = "normal";
+        saveState = false;
     }
 
     function start() {
         // autoplay
-        
+
         if (params.autoplay) { // IF we asked for autoplay AND we are autoplay-disabled, show play shield
             if (audioContext && audioContext.state == "suspended" ||
                 navigator.userAgent.match(/iPhone/i) ||
@@ -87,16 +88,19 @@ function CharApiClient(divid, params) {
         if (typeof params.preload === "boolean") preload = params.preload;
         if (typeof params.fade === "boolean") fade = params.fade;
         if (typeof params.playShield === "boolean") playShield = params.playShield; // effectively forces autoplay
-        if (typeof params.idleType === "string") idleType = params.idleType; // for debugging only "none"/"blink"/"normal"
-        if (typeof params.bobType === "string") bobType = params.bobType; // for debugging only "none"/"normal"
+        if (typeof params.idleType === "string") idleType = params.idleType; // "none"/"blink"/"normal"
+        if (typeof params.bobType === "string") bobType = params.bobType; // "none"/"always"/"normal"
+        if (typeof params.saveState === "boolean") saveState = params.saveState; // initial state of 2nd dynamicPlay is the final state of the previous one
 
-		setupScene();
-		if (playShield) setupPlayShield(params.width, params.height);
-		setupCharacter();
-	}
+        if (bobType == "always") bob = true;
+
+        setupScene();
+        if (playShield) setupPlayShield(params.width, params.height);
+        setupCharacter();
+    }
 
     function setupScene() {
-		var div = document.getElementById(divid);
+        var div = document.getElementById(divid);
         var cx = params.width;
         var cy = params.height;
         var scale = !isVector() ? ((params.characterScale||100)/100).toFixed(2) : 1;
@@ -104,20 +108,20 @@ function CharApiClient(divid, params) {
         var cyMax = cy;
         var cxMax2 = cxMax * scale;
         var cyMax2 = cyMax * scale;
-		var s = '';
-		s += '<div id="' + divid + '-top' + '" style="visibility:hidden; width:' + cx + 'px; height:' + cy + 'px; position:relative; overflow: hidden;">';
+        var s = '';
+        s += '<div id="' + divid + '-top' + '" style="visibility:hidden; width:' + cx + 'px; height:' + cy + 'px; position:relative; overflow: hidden;">';
         s += '  <canvas id="' + divid + '-canvas" width="' + cxMax + '" height="' + cyMax + '" style="position:absolute; top:0px; left:0px; width:' + cxMax2 + 'px; height:' + cyMax2 + 'px; "></canvas>';
         if (playShield)
             s += '  <canvas id="' + divid + '-playshield-canvas" style="position:absolute; left:0px; top:0px;" width="' + cx +'px" height="' + cy + 'px"/></canvas>';
         if (!audioContext)
             s += '  <audio id="' + divid + "-audio" + '"></audio>';
-		s += '</div>'
-		div.innerHTML = s;
-	}
+        s += '</div>'
+        div.innerHTML = s;
+    }
 
     function setupCharacter() {
-		execute("", "", null, null, null); // first load results in characterLoaded
-	}
+        execute("", "", null, null, null); // first load results in characterLoaded
+    }
 
     function characterLoaded() {
         var topDiv = document.getElementById(divid + "-top");
@@ -163,11 +167,6 @@ function CharApiClient(divid, params) {
     this.dynamicPlay = function(o) {
         if (audioContext) audioContext.resume();
         if (o) {
-            // You can use bobType = "always" to force a head movement at the beginning of the play queue.
-            if (bobType == "always" && !bob && supportsBob() && !playCur) {
-                playCur = {do:"headidle1"};
-                execute(playCur.do, null, null, null, onPlayDone);
-            }
             // Process the object
             if (typeof o.say == "number") o.say = o.say.toString();
             else if (typeof o.say != "string") o.say = "";
@@ -176,7 +175,7 @@ function CharApiClient(divid, params) {
                 execute(o.do, o.say, o.audio, o.lipsync, onPlayDone);
             }
             else {
-                if (!playCur && playQueue.length == 0) 
+                if (!playCur && playQueue.length == 0)
                     stopAll(); // accelerate any running idle when we begin to play
                 playQueue.push(o);
                 // All queued messages are preload candidates
@@ -197,19 +196,19 @@ function CharApiClient(divid, params) {
     }
 
     function onPlayDone() {
-	    if (playQueue.length > 0) {
-	        playCur = playQueue.shift();
+        if (playQueue.length > 0) {
+            playCur = playQueue.shift();
             execute(playCur.do, playCur.say, playCur.audio, playCur.lipsync, onPlayDone);
             document.getElementById(divid).dispatchEvent(createEvent("playQueueLengthDecreased"));
         }
         else {
-	        if (playCur) { // we also get here onIdleComplete
+            if (playCur) { // we also get here onIdleComplete
                 playCur = null;
                 document.getElementById(divid).dispatchEvent(createEvent("playComplete")); // i.e. all plays complete - we are idle
             }
         }
     }
-    
+
     function onIdleComplete() {
         // if a play happens while running an idle automation, we just queue it up
         onPlayDone();
@@ -232,11 +231,11 @@ function CharApiClient(divid, params) {
         var url = params.endpoint;
         // Additional parameters from the caller, e.g. character
         for (var key in params) {
-            if (key && key != "endpoint" && key != "width" && key != "height" && key != "fade" && key != "idleType" && key != "bobType" && key != "autoplay" && key != "playShield" && key != "preload") // minus the parameters for charapiclient
+            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "bobType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState") // minus the parameters for charapiclient
                 url += (url.indexOf("?") == -1 ? "?" : "&") + key + "=" + encodeURIComponent(params[key]);
         }
         // Additional params added by charapiclient.js, e.g. texture, with
-        if (addedParams) url += (url.indexOf("?") == -1 ? "?" : "&") + addedParams;
+        if (addedParams) url += (url.indexOf("?") == -1 ? "?" : "&") + addedParams.substr(1);
         return url;
     }
 
@@ -251,12 +250,14 @@ function CharApiClient(divid, params) {
     var audioBuffer;                     // Audio buffer being loaded
     var audioSource;                     // Audio source, per character
 
+    // State
+    var initialState = "";
+
     // Loading
-    var texture;					  // Latest loaded texture - we try to keep it down to eyes, mouth - the leftovers
-    var animData;				  	  // animData to match texture.
+    var texture;                      // Latest loaded texture - we try to keep it down to eyes, mouth - the leftovers
+    var animData;                     // animData to match texture.
     var secondaryTextures = {};       // e.g. {LookDownLeft:Texture}
-    var initialTexture;               // As an optimization, the initial texture, which needs to load quickly, contains 3 or more textures, so optimize for this.
-    var initialTextureLocations = {}; // A set of sets e.g. {Background:{x:0,y:0}, Front:{x:0,y:100}, LookUser:{x:100,y:100}}
+    var defaultTexture;               // The initial texture is also the secondary texture named 'default'
 
     // Running
     var loaded;                     // True if default frame is loaded for a given character
@@ -277,13 +278,13 @@ function CharApiClient(divid, params) {
     var randomRightLoaded = false;      // Drive bob
     var bob = false;                    // True if both head bob tracks are loaded by idle - tells the server to include it in messages
     var lastIdle = "";                  // Avoid repeating an idle, etc.
-    
+
     // Settle feature
     var timeSinceLastAudioStopped = 0;   // Used to detect if and how much we should settle for
     var settleTimeout;              // If non-0, we are animating true but are delaying slightly at the beginning to prevent back-to-back audio
 
     // Preloading
-    var preload = true;		    // Master switch (a param normally)
+    var preload = true;         // Master switch (a param normally)
     var preloaded = [];         // list of things we already pulled on
     var preloadQueue = [];      // de-duped list of urls to pull on
     var preloading = false;     // url being preloaded
@@ -293,13 +294,14 @@ function CharApiClient(divid, params) {
         gainNode = null;
         audioBuffer = null;
         audioSource = undefined;
-        
+
+        initialState = "";
+
         texture = undefined;
         animData = undefined;
         secondaryTextures = {};
-        initialTexture = undefined;
-        initialTextureLocations = {};
-        
+        defaultTexture = undefined;
+
         loaded = undefined;
         loading = undefined;
         animating = undefined;
@@ -310,7 +312,7 @@ function CharApiClient(divid, params) {
         executeCallback = undefined;
         idleTimeout = null;
         rafid = null;
-        
+
         idleTimeout = null;
         timeSinceLastIdleCheck = 0;
         timeSinceLastAction = undefined;
@@ -318,10 +320,10 @@ function CharApiClient(divid, params) {
         randomRightLoaded = false;
         bob = false;
         lastIdle = "";
-        
+
         timeSinceLastAudioStopped = 0;
         settleTimeout = undefined;
-        
+
         preload = true;
         preloaded = [];
         preloadQueue = [];
@@ -334,7 +336,7 @@ function CharApiClient(divid, params) {
             console.log("internal error"); // execute called on a character while animating that character
             return;
         }
-        
+
         executeCallback = callback;
 
         stopping = false;
@@ -343,19 +345,18 @@ function CharApiClient(divid, params) {
         animating = false;
 
         var addedParams = "";
-        
+
         var action = "";
         secondaryTextures = {};
         if (tag || say) {
             setRandomSeed(say);
-            var actionTemplate = getActionTemplateFromTag(tag, params.character); 
+            if (saveState) addedParams += "&initialstate=" + initialState;
+            var actionTemplate = getActionTemplateFromTag(tag, params.character);
             var action = getActionFromActionTemplate(actionTemplate, say, audio, bob);
             addedParams = addedParams + '&action=' + encodeURIComponent(action);
-            addedParams = addedParams + '&with=' + encodeURIComponent(getWithFromTag(tag, params.character, bob));
-            secondaryTextures = secondaryTexturesFromTag(tag, params.character);
-            if (bob) secondaryTextures["RandomRight"] = null; 
+            addedParams = addedParams + '&with=all';
         }
-        
+
         if (say && audio && lipsync)
             speakRecorded(addedParams, audio, lipsync);
         else if (say)
@@ -363,7 +364,7 @@ function CharApiClient(divid, params) {
         else
             loadAnimation(addedParams, false);
     }
-    
+
     function speakRecorded(params, audioURL, lipsync) {
         params = params + '&lipsync=' +  encodeURIComponent(lipsync);
         // load the audio, but hold it
@@ -404,7 +405,7 @@ function CharApiClient(divid, params) {
                     loadAnimation(addedParams, true);
                 });
             };
-            xhr.send();        
+            xhr.send();
         }
         else { // IE only
             var audio = document.getElementById(divid + "-audio");
@@ -425,23 +426,30 @@ function CharApiClient(divid, params) {
         xhr.onload = function () {
             animData = JSON.parse(xhr.response);
             if (preloaded.indexOf(dataURL) == -1) preloaded.push(dataURL);
+            // Record the textures we'll need
+            secondaryTextures = {};
+            for (var i = 0; i < animData.textures.length; i++) {
+                if (animData.textures[i] != "default")
+                    secondaryTextures[animData.textures[i]] = null;
+            }
             // Load the image
             var imageURL = makeGetURL(addedParams + "&type=image");
             texture = new Image();
             texture.crossOrigin = "Anonymous";
             texture.onload = function() {
-                if (preloaded.indexOf(imageURL) == -1) preloaded.push(imageURL);        
+                if (preloaded.indexOf(imageURL) == -1) preloaded.push(imageURL);
                 loadSecondaryTextures(startAudio);
             };
             texture.src = imageURL;
         }
         xhr.send();
     }
-    
+
     function loadSecondaryTextures(startAudio) {
         var allLoaded = true;
-        for (var key in secondaryTextures)
-            if (secondaryTextures[key] == null) {allLoaded = false; break;}
+        var key;
+        for (key in secondaryTextures)
+            if (secondaryTextures[key] === null) {allLoaded = false; break;}
         if (allLoaded) {
             getItStarted(startAudio)
         }
@@ -452,8 +460,8 @@ function CharApiClient(divid, params) {
             secondaryTextures[key].crossOrigin = "Anonymous";
             secondaryTextures[key].onload = function () {
                 if (textureURL && preloaded.indexOf(textureURL) == -1) preloaded.push(textureURL);
-                // keep special track of these two textures when they get loaded
-                if (key == "RandomRight")
+                // keep special track of this texture when it is loaded
+                if (key.indexOf("RandomRight") != -1)
                     randomRightLoaded = true;
                 if (randomRightLoaded && bobType != "none")
                     bob = true;
@@ -468,10 +476,11 @@ function CharApiClient(divid, params) {
     function preloadExecute(tag, say, audio, lipsync) {
         var addedParams = "";
         setRandomSeed(say);
-        var actionTemplate = getActionTemplateFromTag(tag, params.character); 
+        if (saveState) addedParams += "&initialstate=" + initialState;
+        var actionTemplate = getActionTemplateFromTag(tag, params.character);
         var action = getActionFromActionTemplate(actionTemplate, say, audio, bob);
         addedParams = addedParams + '&action=' + encodeURIComponent(action);
-        addedParams = addedParams + '&with=' + encodeURIComponent(getWithFromTag(tag, params.character, bob));
+        addedParams = addedParams + '&with=all';
         if (say && audio && lipsync) {
             addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         }
@@ -483,13 +492,6 @@ function CharApiClient(divid, params) {
         preloadHelper(imageURL);
         var dataURL = makeGetURL(addedParams + "&type=data");
         preloadHelper(dataURL);
-        var secondary = secondaryTexturesFromTag(tag, params.character);
-        if (supportsBob() && say||audio) // always preload these, so even if we begin life with no idle, we very soon do get bob
-            secondary["RandomRight"] = null; 
-        for (var key in secondary) {
-            var textureURL = makeGetURL("&texture=" + key + "&type=image");
-            preloadHelper(textureURL);
-        }
     }
 
     function preloadHelper(url) {
@@ -506,7 +508,16 @@ function CharApiClient(divid, params) {
         xhr.open("GET", preloading, true);
         xhr.addEventListener("load", function() {
             preloaded.push(preloading);
+            // if this was animation data, then also find secondary textures
+            if (preloading.indexOf("&type=data") != -1) {
+                var animDataPreload = JSON.parse(xhr.response);
+                for (var i = 0; i < animDataPreload.textures.length; i++) {
+                    if (animDataPreload.textures[i] != "default")
+                        preloadHelper(makeGetURL("&texture=" + animDataPreload.textures[i] + "&type=image"));
+                }
+            }
             preloading = null;
+            // restart in a bit
             if (preloadQueue.length > 0)
                 preloadTimeout = setTimeout(preloadSomeMore, 500);
         });
@@ -517,7 +528,7 @@ function CharApiClient(divid, params) {
         // render the first frame and start animation loop
         loading = false;
         animating = true;
-        
+
         // Settling feature - establish a minimum time between successive animations - mostly to prevent back to back audio - because we are so good at preloading
         if (settleTimeout) {clearTimeout(settleTimeout); settleTimeout = 0;}
         var t = Date.now();
@@ -533,7 +544,7 @@ function CharApiClient(divid, params) {
         settleTimeout = 0;
         getItStartedActual(startAudio);
     }
-    
+
     function getItStartedActual(startAudio) {
         // start animation loop
         if (!rafid) rafid = requestAnimationFrame(animate);
@@ -571,7 +582,7 @@ function CharApiClient(divid, params) {
             {
                 completed = true;
             }
-            else {    
+            else {
 
                 var frameNew;
                 if (!recovery) {
@@ -614,17 +625,15 @@ function CharApiClient(divid, params) {
                                     var key = recipe[i][6];
                                     if (typeof key == "number") key = animData.textures[key];
                                     var src, off = {x:0, y:0};
-                                    if (initialTextureLocations && initialTextureLocations[key]) {
-                                        src = initialTexture;
-                                        off = initialTextureLocations[key]
-                                    }
+                                    if (key == 'default' && defaultTexture)
+                                        src = defaultTexture;
                                     else if (secondaryTextures && secondaryTextures[key])
                                         src = secondaryTextures[key];
                                     else
                                         src = texture;
-                                    var png = (params.transparent || isVector());
+                                    var png = (params.format == "png" || animData.layered);
                                     if (png) {
-                                        if (!isVector()) {
+                                        if (!animData.layered) {
                                             ctx.clearRect(
                                                 recipe[i][0], recipe[i][1],
                                                 recipe[i][4], recipe[i][5]
@@ -700,29 +709,20 @@ function CharApiClient(divid, params) {
         if (!loaded) {
             loaded = true;
 
-            // Pick up initial texture if we are loading character for the first time
-            if (!initialTexture && texture && animData && animData.recipes) {
-                initialTexture = texture;   // Used as a with for all further textures
-                var a = animData.recipes[0];
-                initialTextureLocations = {};
-                for (var i = 0; i < a.length; i++) {
-                    var key = a[i][6];
-                    if (typeof key == "number") key = animData.textures[key];
-                    initialTextureLocations[key] = {x: a[i][2], y: a[i][3]}
-                }
-            }
+            // Pick up initial default texture if we are loading character for the first time
+            if (!defaultTexture && texture && animData && animData.recipes)
+                defaultTexture = texture;
 
             timeSinceLastBlink = 0;
-            
+
             characterLoaded();
         }
         else {
             if (audioSource) {
-                audioSource.stop();
-                audioSource.disconnect();
                 audioSource = null;
                 timeSinceLastAudioStopped = Date.now();
             }
+            if (params.saveState) initialState = animData.finalState;
             if (executeCallback) {
                 var t = executeCallback;
                 executeCallback = null;
@@ -735,7 +735,7 @@ function CharApiClient(divid, params) {
         var style = characterObject(params.character).style;
         return style.split("-")[0] == "illustrated" || style == "cs" || style == "classic";
     }
-    
+
     function getIdlesFromStyle(style) {
         // Because we are not loading env.json
         var styleMajor = style.split("-")[0];
@@ -758,7 +758,7 @@ function CharApiClient(divid, params) {
         var idles = getIdlesFromStyle(style);
         return (idles.indexOf("headidle1") != -1);
     }
-    
+
     //
     // Idle
     //
@@ -766,7 +766,7 @@ function CharApiClient(divid, params) {
     function startIdle() {
         if (!idleTimeout) idleTimeout = setTimeout(checkIdle, 1000)
     }
-    
+
     function checkIdle() {
         // Called every second until cleanup
         var t = Date.now();
@@ -781,7 +781,7 @@ function CharApiClient(divid, params) {
                 // there will be action - will it be a blink? They must occur at a certain frequency.
                 if (idleType != "none" && timeSinceLastBlink > 5000 + Math.random() * 5000) {
                     timeSinceLastBlink = 0;
-                    execute("blink", "", null, onIdleComplete.bind(null));
+                    execute("blink", "", null, null, onIdleComplete.bind(null));
                 }
                 // or another idle routine
                 else if (idleType == "normal") {
@@ -800,14 +800,14 @@ function CharApiClient(divid, params) {
                     }
                     if (idle) {
                         lastIdle = idle;
-                        execute(idle, "", null, onIdleComplete.bind(null));
+                        execute(idle, "", null, null, onIdleComplete.bind(null));
                     }
                 }
             }
         }
         idleTimeout = setTimeout(checkIdle, 1000);
     }
-    
+
 
     //
     // Cleanup - all timers stopped, resources dropped, etc.
@@ -933,15 +933,15 @@ function CharApiClient(divid, params) {
             e.onclick = onPlayShieldClick;
         }
     }
-    
+
     //
     // Misc
     //
-    
+
     function createEvent(s) {
         if(typeof(Event) === 'function') {
             return new Event(s);
-        } 
+        }
         else {
             // For IE
             var event = document.createEvent('Event');
@@ -962,7 +962,7 @@ function CharApiClient(divid, params) {
     {"id":"cgi-bust", "name":"CG Cartoon Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
     {"id":"cgi-body", "name":"CG Cartoon Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0}
     ];
-  
+
     var characters = [
     {"id":"SteveHead", "style":"realistic-head", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveHead.gif"},
     {"id":"SusanHead", "style":"realistic-head", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanHead.gif"},
@@ -1012,7 +1012,7 @@ function CharApiClient(divid, params) {
 
     {"id":"CarlaBody", "style":"cgi-body", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaBody.gif"},
     {"id":"CarlBody", "style":"cgi-body", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlBody.gif"},
-    
+
     {"id":"TomBody", "style":"illustrated-body", "name":"Tom", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/TomBody.gif"},
     {"id":"TashaBody", "style":"illustrated-body", "name":"Tasha", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/TashaBody.gif"},
     {"id":"RickBody", "style":"illustrated-body", "name":"Rick", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"2.2", "thumb":"img/characters/RickBody.gif"},
@@ -1053,10 +1053,10 @@ function CharApiClient(divid, params) {
                 return characterStyles[i];
         return null;
     }
-  
+
     // This class supports a simplified model in which each Play can be associated with a specific action. The result is less flexible, but easier to work with.
     // This is the same model supported by the Character Builder Agent and Chatbot modules.
-    
+
     var actions = [
         {"id":"look-up-right", "category":"look", "name":"Look Up Right", "xml":"<lookupleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
         {"id":"look-right", "category":"look", "name":"Look Right", "xml":"<lookleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
@@ -1150,7 +1150,7 @@ function CharApiClient(divid, params) {
         {"id":"headidle3", "category":"idle", "name":"Head Idle 3", "xml":"<headrandom1/><pause cms=\"300\"/><headrandom4/><pause cms=\"300\"/><headuser/>"},
         {"id":"bodyidle1", "category":"idle", "name":"Body Idle 1", "xml":"<headrandom1/><swayarms/><headuser/>"}
     ];
-    
+
     var actionCategories = [
         {"id":"look", "name":"Look", "characterStyles":["realistic-body","realistic-bust","realistic-head","illustrated-head","illustrated-body","cgi-body","cgi-bust","cgi-head","classic"]},
         {"id":"look-limited", "name":"Look", "characterStyles":["cs"]},
@@ -1165,7 +1165,7 @@ function CharApiClient(divid, params) {
         {"id":"conversational", "name":"Conversational", "characterStyles":["realistic-body","realistic-bust","illustrated-body","cgi-body","cgi-bust","classic"]},
         {"id":"conversational-cs", "name":"Conversational", "characterStyles":["cs"]}
     ];
-    
+
     function actionCategoryObject(id) {
         for (var i = 0; i < actionCategories.length ; i++)
             if (actionCategories[i].id == id)
@@ -1183,126 +1183,6 @@ function CharApiClient(divid, params) {
             }
         }
         return "";
-    }
-
-    function getWithFromTag(tag, character, bob) {
-        // i.e. in generating your texture, you can assume these named images are already there
-        var s = "";
-        var characterObj = characterObject(character);
-        var style = characterObj.style;
-        var styleMajor = style.split("-")[0];
-        var male = characterObj.gender == "male";
-        var characterBare = character.replace("Head","").replace("Bust","").replace("Body","")
-        // The runtime always tries to pull neutral position layers from the original texture
-        if (styleMajor == "realistic" || styleMajor == "cgi")
-            s = "Background,Front,FrontLookUser";
-        else if (styleMajor == "illustrated") {
-            s = "Background,Body,HandsBySideBody,LookUser,LookUserMouth,LookUserEyesBack,LookUserEyes,LookUserEyesFront,LookUserHair,LookUserGlasses";
-            if (male) { // full male wardrobe
-                s += ",IM1BodyDressShoes";
-                s += ",IM1BodyDressPants";
-                s += ",IM1BodyShirt,IM1BodyShirt2,IM1BodyShirt3";
-                s += ",IM1BodyHandsBySideShirt,IM1BodyHandsBySideShirt2,IM1BodyHandsBySideShirt3";
-                s += ",IM1BodyPlainTie,IM1BodyPlainTie2,IM1BodyPlainTie3";
-                s += ",IM1BodyLookUserGlasses";
-                s += ",IM1BodyLookUser" + characterBare + "Hair";
-            }
-            else { // full female wardrobe
-                s += ",IW1BodyFlats";
-                s += ",IW1BodyPants,IW1BodyPants2";
-                s += ",IW1BodyShirt,IW1BodyShirtCollar";
-                s += ",IW1BodyHandsBySideShirt,IW1BodyHandsBySideShirtCollar";
-                s += ",IW1BodyLookUser" + characterBare + "Hair";
-                s += ",IW1BodyLookUser" + characterBare + "HairBack";
-            }
-            if (style == "illustrated-head") s = s.replace(/1Body/g, "1Head");
-        }
-        else if (style == "classic") {
-            s = "Background,UserHairBack,Front,FrontArms,User,UserMouth,UserEyesBack,UserEyesPupils,UserEyesFront,UserEyesFrontGlasses";
-        }
-        else if (style == "cs")
-            s = "Background,HairBack,Body,BodyTop,Hair,Head,Mouth,Pupils,Eyes,EyesGlasses,HairFront";
-        var o = secondaryTexturesFromTag(tag, character);
-        for (var key in o)
-            s += "," + key;
-        if (bob) s += ",RandomRight";
-        return s;
-    }
-
-    function secondaryTexturesFromTag(tag, character) {
-        if (!tag) return {};
-        var style = characterObject(character).style;
-
-        var o = {};
-        var styleMajor = style.split("-")[0];
-        var dir = ""; if (tag.indexOf("-right") != 0) dir = "right"; else if (tag.indexOf("-left") != 0) dir = "left";
-        var head = style.indexOf("head") != -1;
-        if (styleMajor == "realistic" || styleMajor == "cgi") {
-            // Head
-            if (tag.substr(0,8) == "headidle") {
-                o["RandomRight"] = null;
-            }
-            else if (tag == "bodyidle1") {
-                o["RandomRight"] = null;
-                o["SwayArms"] = null;
-            }
-            else if (tag == "head-shake") {
-                o["HeadRight"] = null;
-                o["HeadLeft"] = null;
-            }
-            else if (tag == "head-nod") o["HeadDown"] = null;
-            else if (tag.substr(0, 10) == "head-down-") o["Tilt" + tag.substr(10, 1).toUpperCase() + tag.substr(11)] = null;
-            // Look
-            else if (tag.substr(0, 5) == "look-") {
-                textureHelper(tag, o);
-            }
-            // Gesture
-            else if (tag.substr(0, 8) == "gesture-") {
-                textureHelper("front-" + tag, o);
-                textureHelper(tag.replace("gesture", "look"), o); // these include looking
-            }
-            // Point
-            else if (tag.substr(0, 6) == "point-") {
-                textureHelper(tag.replace("point", "look"), o); // these include looking
-            }
-            // Emotive
-            if (!head) {
-                if (tag == "angry") {o["HandsInBack"] = null; o["HeadDown"] = null;}
-                else if (tag == "confused") {o["HandBySideToUp"] = null; o["HandUp"] = null; o["HeadLeft"] = null;}
-                else if (tag == "frustrated") {o["HandsBySideToUp"] = null; o["HandsUp"] = null; o["LookUp"] = null;}
-                else if (tag == "happy") {o["HeadLeft"] = null;}
-                else if (tag == "sad") {o["HandsInBack"] = null; o["HeadDown"] = null;}
-                else if (tag == "wink") {o["TiltLeft"] = null;}
-            } else {
-                if (tag == "surprise") {o["HeadRight"] = null;}
-                else if (tag == "angry") {o["HeadDown"] = null;}
-                else if (tag == "confused") {o["HeadRight"] = null;}
-                else if (tag == "frustrated") {o["LookUp"] = null;}
-                else if (tag == "happy") {o["HeadRight"] = null;}
-                else if (tag == "sad") {o["HeadDown"] = null;}
-                else if (tag == "wink") {o["TiltLeft"] = null;}
-            }
-            // Conversation
-            if (tag == "hi") {o["HeadUp"] = null; o["PalmUp"] = null; o["PalmWave"] = null;}
-            else if (tag == "aha") {o["FingerUp"] = null; o["HeadUp"] = null;}
-            else if (tag == "thinking") {o["HandsInBack"] = null; o["LookUp"] = null;}
-            else if (tag == "stop") {o["TiltRight"] = null; o["PalmUp"] = null;}
-            else if (tag == "emphasize") {o["HeadRight"] = null; o["HandBySideToUp"] = null; o["HandUp"] = null; o["HandEmph"] = null;}
-            else if (tag == "to-me") {o["HeadRight"] = null; o["BySideToIn"] = null; o["HandsIn"] = null;}
-            else if (tag == "to-you") {o["TiltRight"] = null; o["HandsBySideToUp"] = null; o["HandsUp"] = null;}
-            else if (tag == "quote") {o["HeadUp"] = null; o["FingersUp"] = null; o["FingersQuote"] = null;}
-            else if (tag == "weigh") {o["TiltRight"] = null; o["HandsUp"] = null; o["HandsWeigh"] = null;}
-            else if (tag == "hands-in-back") {o["HeadUp"] = null; o["HandsInBack"] = null;}
-        }
-        else if (style == "cs") {
-            // Standard CS actions
-            if (tag.substr(0, 6) == "point-" || tag == "aha" || tag == "angry" || tag == "confused" || tag == "frustrated" || tag == "happy" || tag == "hi" || tag == "thinking" || tag == "thumbs-up")
-                textureHelper(tag, o);
-        }
-        else if (styleMajor == "illustrated") {
-        }
-        //console.log(tag + " -> " + JSON.stringify(o));
-        return o;
     }
 
     function textureHelper(tag, o) {
@@ -1324,9 +1204,9 @@ function CharApiClient(divid, params) {
     }
 
     // Seeded random
-    
+
     var seed = 1;
-    
+
     function setRandomSeed(say) {
         say = say||"";
         // Seed our random with the say text
@@ -1334,12 +1214,12 @@ function CharApiClient(divid, params) {
         for (var i = 0; i < say.length; i++)
             seed += 13 * say.charCodeAt(i);
     }
-    
+
     function seededRandom() {
         var x = Math.sin(seed++) * 10000;
         return x - Math.floor(x);
     }
-    
+
     function getActionFromActionTemplate(action, say, audiotag, bob) {
         if (say || audiotag) {
             say = say||"";
@@ -1365,8 +1245,8 @@ function CharApiClient(divid, params) {
                     // peel off up to max words (or all the words)
                     while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
                         s += b[j];  // add next word
-                        if (j < b.length - 1) { // if this is not the last word, add a space OR a command 
-                            if (!rec.user) 
+                        if (j < b.length - 1) { // if this is not the last word, add a space OR a command
+                            if (!rec.user)
                                 s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
                             else {
                                 if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
