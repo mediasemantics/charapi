@@ -120,7 +120,7 @@ function CharApiClient(divid, params) {
     }
 
     function setupCharacter() {
-        execute("", "", null, null, null); // first load results in characterLoaded
+        execute("", "", null, null, false, null); // first load results in characterLoaded
     }
 
     function characterLoaded() {
@@ -172,7 +172,7 @@ function CharApiClient(divid, params) {
             else if (typeof o.say != "string") o.say = "";
             if (!loading && !animating) {
                 playCur = o;
-                execute(o.do, o.say, o.audio, o.lipsync, onPlayDone);
+                execute(o.do, o.say, o.audio, o.lipsync, false, onPlayDone);
             }
             else {
                 if (!playCur && playQueue.length == 0)
@@ -198,7 +198,7 @@ function CharApiClient(divid, params) {
     function onPlayDone() {
         if (playQueue.length > 0) {
             playCur = playQueue.shift();
-            execute(playCur.do, playCur.say, playCur.audio, playCur.lipsync, onPlayDone);
+            execute(playCur.do, playCur.say, playCur.audio, playCur.lipsync, false, onPlayDone);
             document.getElementById(divid).dispatchEvent(createEvent("playQueueLengthDecreased"));
         }
         else {
@@ -269,15 +269,17 @@ function CharApiClient(divid, params) {
     var recovery;                   // A {frame, time} object if recovering from a stop
     var executeCallback;            // What to call on execute() return, i.e. when entire animation is complete
     var rafid;                      // Defined only when at least one character is animating - otherwise we stop the RAF (game) loop
+    var atLeastOneLoadError;        // We use this to stop idle after first load error
 
     // Idle
     var idleTimeout;
     var timeSinceLastIdleCheck;
-    var timeSinceLastAction;       // Time since any action, reset on end of a message - drives idle priority
-    var timeSinceLastBlink;        // Similar but only for blink
+    var timeSinceLastAction;            // Time since any action, reset on end of a message - drives idle priority
+    var timeSinceLastBlink;             // Similar but only for blink
     var randomRightLoaded = false;      // Drive bob
     var bob = false;                    // True if both head bob tracks are loaded by idle - tells the server to include it in messages
     var lastIdle = "";                  // Avoid repeating an idle, etc.
+    var idleCache = {};                 // Even though idle resources are typically in browser cache, we prefer to keep them in memory, as they are needed repeatedly    
 
     // Settle feature
     var timeSinceLastAudioStopped = 0;   // Used to detect if and how much we should settle for
@@ -331,7 +333,7 @@ function CharApiClient(divid, params) {
         preloadTimeout = null;
     }
 
-    function execute(tag, say, audio, lipsync, callback) {
+    function execute(tag, say, audio, lipsync, idle, callback) {
         if (loading || animating) {
             console.log("internal error"); // execute called on a character while animating that character
             return;
@@ -362,11 +364,11 @@ function CharApiClient(divid, params) {
         else if (say)
             speakTTS(addedParams);
         else
-            loadAnimation(addedParams, false);
+            loadAnimation(addedParams, false, idle);
     }
 
-    function speakRecorded(params, audioURL, lipsync) {
-        params = params + '&lipsync=' +  encodeURIComponent(lipsync);
+    function speakRecorded(addedParams, audioURL, lipsync) {
+        addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         // load the audio, but hold it
         if (audioContext) { // Normal case
             var xhr = new XMLHttpRequest();
@@ -375,17 +377,21 @@ function CharApiClient(divid, params) {
             xhr.onload = function () {
                 audioContext.decodeAudioData(xhr.response, function (buffer) {
                     audioBuffer = buffer;
-                    loadAnimation(params, true);
+                    loadAnimation(addedParams, true, false);
+                }, function (e) {
+                    animateFailed(who);
                 });
             };
+            xhr.onerror = function() {animateFailed();}
             xhr.send();
         }
         else { // IE only
             var audio = document.getElementById(divid + "-audio");
             audio.oncanplaythrough = function() {
                 audio.pause();
-                loadAnimation(params, true);
+                loadAnimation(addedParams, true, false);
             };
+            audio.onerror = function() {animateFailed();}
             audio.src = audioURL;
         }
 
@@ -402,9 +408,12 @@ function CharApiClient(divid, params) {
                 audioContext.decodeAudioData(xhr.response, function (buffer) {
                     audioBuffer = buffer;
                     if (preloaded.indexOf(audioURL) == -1) preloaded.push(audioURL);
-                    loadAnimation(addedParams, true);
+                    loadAnimation(addedParams, true, false);
+                }, function (e) {
+                    animateFailed(who);
                 });
             };
+            xhr.onerror = function() {animateFailed();}
             xhr.send();
         }
         else { // IE only
@@ -412,40 +421,69 @@ function CharApiClient(divid, params) {
             audio.oncanplaythrough = function() {
                 audio.pause();
                 if (preloaded.indexOf(audioURL) == -1) preloaded.push(audioURL);
-                loadAnimation(addedParams, true);
+                loadAnimation(addedParams, true, false);
             };
+            audio.onerror = function() {animateFailed();}
             audio.src = audioURL;
         }
     }
 
-    function loadAnimation(addedParams, startAudio) {
+    function loadAnimation(addedParams, startAudio, idle) {
         var dataURL = makeGetURL(addedParams + "&type=data");
+        var imageURL = makeGetURL(addedParams + "&type=image");
+        
+        // Idle cache shortcut
+        if (idleCache[dataURL] && idleCache[imageURL]) {
+            animData = idleCache[dataURL];
+            texture = idleCache[imageURL];
+            recordSecondaryTextures();
+            loadSecondaryTextures(addedParams, startAudio);
+            return;
+        }
+        
         // Load the data
         var xhr = new XMLHttpRequest();
         xhr.open('GET', dataURL, true);
         xhr.onload = function () {
-            animData = JSON.parse(xhr.response);
-            if (preloaded.indexOf(dataURL) == -1) preloaded.push(dataURL);
-            // Record the textures we'll need
-            secondaryTextures = {};
-            for (var i = 0; i < animData.textures.length; i++) {
-                if (animData.textures[i] != "default")
-                    secondaryTextures[animData.textures[i]] = null;
-            }
+            
+            try {
+                animData = JSON.parse(xhr.response);
+            } catch(e) {animateFailed();}
+
             // Load the image
-            var imageURL = makeGetURL(addedParams + "&type=image");
             texture = new Image();
             texture.crossOrigin = "Anonymous";
             texture.onload = function() {
-                if (preloaded.indexOf(imageURL) == -1) preloaded.push(imageURL);
-                loadSecondaryTextures(startAudio);
+                
+                // Populate idle cache
+                if (idle) {
+                    idleCache[dataURL] = animData;
+                    idleCache[imageURL] = texture;
+                }
+                
+                recordSecondaryTextures();
+                loadSecondaryTextures(addedParams, startAudio);
             };
+            texture.onerror = function() {animateFailed();}
             texture.src = imageURL;
         }
+        xhr.onerror = function() {animateFailed();}
         xhr.send();
+        
+        // No need to preload these
+        if (imageURL && preloaded.indexOf(imageURL) == -1) preloaded.push(imageURL);
+        if (dataURL && preloaded.indexOf(dataURL) == -1) preloaded.push(dataURL);
     }
 
-    function loadSecondaryTextures(startAudio) {
+    function recordSecondaryTextures() {
+        secondaryTextures = {};
+        for (var i = 0; i < animData.textures.length; i++) {
+            if (animData.textures[i] != "default")
+                secondaryTextures[animData.textures[i]] = null;
+        }
+    }
+
+    function loadSecondaryTextures(addedParams, startAudio) {
         var allLoaded = true;
         var key;
         for (key in secondaryTextures)
@@ -456,19 +494,32 @@ function CharApiClient(divid, params) {
         else {
             // key is next texture to load
             var textureURL = makeGetURL("&texture=" + key + "&type=image");
+            
+            // idle cache shortcut
+            if (idleCache[textureURL]) {
+                secondaryTextures[key] = idleCache[textureURL];
+                loadSecondaryTextures(addedParams, startAudio);
+                return;
+            }
+            
             secondaryTextures[key] = new Image();
             secondaryTextures[key].crossOrigin = "Anonymous";
             secondaryTextures[key].onload = function () {
-                if (textureURL && preloaded.indexOf(textureURL) == -1) preloaded.push(textureURL);
+                
                 // keep special track of this texture when it is loaded
                 if (key.indexOf("RandomRight") != -1)
                     randomRightLoaded = true;
                 if (randomRightLoaded && bobType != "none")
                     bob = true;
+                // populate idle cache
+                if (addedParams.indexOf("&idle=") != -1 || key.indexOf("RandomRight") != -1)
+                    idleCache[textureURL] = secondaryTextures[key];
                 // load some more
-                loadSecondaryTextures(startAudio);
+                loadSecondaryTextures(addedParams, startAudio);
             };
+            secondaryTextures[key].onerror = function() {animateFailed();}
             secondaryTextures[key].src = textureURL;
+            if (textureURL && preloaded.indexOf(textureURL) == -1) preloaded.push(textureURL);
         }
     }
 
@@ -506,8 +557,9 @@ function CharApiClient(divid, params) {
         //console.log("preloading "+preloading)
         var xhr = new XMLHttpRequest();
         xhr.open("GET", preloading, true);
-        xhr.addEventListener("load", function() {
-            preloaded.push(preloading);
+        xhr.onload = function() {
+            if (preloaded.indexOf(preloading) == -1)
+                preloaded.push(preloading);
             // if this was animation data, then also find secondary textures
             if (preloading.indexOf("&type=data") != -1) {
                 var animDataPreload = JSON.parse(xhr.response);
@@ -520,7 +572,7 @@ function CharApiClient(divid, params) {
             // restart in a bit
             if (preloadQueue.length > 0)
                 preloadTimeout = setTimeout(preloadSomeMore, 500);
-        });
+        };
         xhr.send();
     }
 
@@ -567,6 +619,8 @@ function CharApiClient(divid, params) {
         // simple strategy - when there is stuff to preload, slip one in every second or so - rarely does it lock up load channels for actual loads
         if (!preloadTimeout && preload)
             preloadTimeout = setTimeout(preloadSomeMore, 500);
+		// bob normally withheld for initial segment only
+		if (!bob && bobType == "normal" && supportsBob() && startAudio) bob = true;
     }
 
     function animate(timestamp) {
@@ -624,7 +678,7 @@ function CharApiClient(divid, params) {
                                 for (var i = 0; i < recipe.length; i++) {
                                     var key = recipe[i][6];
                                     if (typeof key == "number") key = animData.textures[key];
-                                    var src, off = {x:0, y:0};
+                                    var src;
                                     if (key == 'default' && defaultTexture)
                                         src = defaultTexture;
                                     else if (secondaryTextures && secondaryTextures[key])
@@ -640,7 +694,7 @@ function CharApiClient(divid, params) {
                                             );
                                         }
                                         ctx.drawImage(src,
-                                            recipe[i][2] + off.x, recipe[i][3] + off.y,
+                                            recipe[i][2], recipe[i][3],
                                             recipe[i][4], recipe[i][5],
                                             recipe[i][0], recipe[i][1],
                                             recipe[i][4], recipe[i][5]);
@@ -648,7 +702,7 @@ function CharApiClient(divid, params) {
                                     else {
                                         var buf = i > 1 ? 1 : 0; // jpeg edges are fuzzy
                                         ctx.drawImage(src,
-                                            recipe[i][2] + off.x + buf, recipe[i][3] + off.y + buf,
+                                            recipe[i][2] + buf, recipe[i][3] + buf,
                                             recipe[i][4] - buf*2, recipe[i][5] - buf * 2,
                                             recipe[i][0] + buf, recipe[i][1] + buf,
                                             recipe[i][4] - buf*2, recipe[i][5] - buf*2);
@@ -701,6 +755,13 @@ function CharApiClient(divid, params) {
             animating = false;
             animateComplete();
         }
+    }
+
+    function animateFailed() {
+        console.log("Service error");
+        atLeastOneLoadError = true;
+        loading = false;
+        animateComplete();
     }
 
     function animateComplete() {
@@ -775,13 +836,13 @@ function CharApiClient(divid, params) {
         timeSinceLastAction += elapsed;
         timeSinceLastBlink += elapsed;
 
-        if (loaded && !loading && !animating && !playShield) {
+        if (loaded && !loading && !animating && !playShield && !atLeastOneLoadError) {
             if (timeSinceLastAction > 1500 + Math.random() * 3500) {  // no more than 5 seconds with no action whatsoever
                 timeSinceLastAction = 0;
                 // there will be action - will it be a blink? They must occur at a certain frequency.
                 if (idleType != "none" && timeSinceLastBlink > 5000 + Math.random() * 5000) {
                     timeSinceLastBlink = 0;
-                    execute("blink", "", null, null, onIdleComplete.bind(null));
+                    execute("blink", "", null, null, true, onIdleComplete.bind(null));
                 }
                 // or another idle routine
                 else if (idleType == "normal") {
@@ -800,7 +861,7 @@ function CharApiClient(divid, params) {
                     }
                     if (idle) {
                         lastIdle = idle;
-                        execute(idle, "", null, null, onIdleComplete.bind(null));
+                        execute(idle, "", null, null, true, onIdleComplete.bind(null));
                     }
                 }
             }
@@ -1183,24 +1244,6 @@ function CharApiClient(divid, params) {
             }
         }
         return "";
-    }
-
-    function textureHelper(tag, o) {
-        // general rule is e.g. look-down-left -> LookDownRight (right and left swapped because character uses stage left / stage right)
-        var cap = true;
-        var s = "";
-        for (var i = 0; i < tag.length; i++) {
-            if (tag[i] == "-")
-                cap = true;
-            else {
-                s += cap ? tag[i].toUpperCase() : tag[i];
-                cap = false;
-            }
-        }
-        s = s.replace("Left", "XXX");
-        s = s.replace("Right", "Left");
-        s = s.replace("XXX", "Right");
-        o[s] = null;
     }
 
     // Seeded random

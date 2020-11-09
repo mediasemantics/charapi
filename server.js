@@ -4,6 +4,8 @@ var fs = require('fs');
 var request = require('request');
 var AWS = require('aws-sdk');
 var zlib = require('zlib');
+var lockFile = require('lockfile');
+
 
 // TODO set up your Character API key here
 var charAPIKey = "xxxxxxxx";
@@ -94,125 +96,161 @@ app.get('/animate', function(req, res, next) {
     if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes to defeat browser caching
     var filebase = hash.digest("hex");
     var type = req.query.type;                          // This is the type of file actually requested - audio, image, or data
+    var format = o.format;                              // "png" or "jpeg"
 
-    // Simple mechanism to deal with the possibility of two near-simultaneous uncached requests with same parameters
-    if (g_inFlight[filebase]) {
-        setTimeout(function() {checkInFlight(req, res, filebase, type, o.format, 1)}, 100);
-        return;
-    }
-    
-	// Case where there is no tts and we can send straight to animate
-	if (o.action.indexOf("<say>") == -1 || o.lipsync)
-	{
-		if (!fs.existsSync(targetFile(filebase, "image", o.format))) {
-            g_inFlight[filebase] = true;
-            o.key = charAPIKey;
-            o.zipdata = true;
-            console.log("---> calling animate w/ "+JSON.stringify(o));
-            var animateTimeStart = new Date();						
-			request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                var animateTimeEnd = new Date();						
-                console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                if (err) return next(new Error(body));
-				if (httpResponse.statusCode >= 400) {delete g_inFlight[filebase]; return next(new Error(body));}
-                fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
-                    if (o.texture) {
-                        delete g_inFlight[filebase];
+	lockFile.lock(targetFile(filebase, "lock"), {}, function() {
+        let file = targetFile(filebase, type, format);
+        fs.exists(file, function(exists) {
+            if (exists) {
+                lockFile.unlock(targetFile(filebase, "lock"), function() {
+                    // "touch" each file we return - you can use a cron to delete files older than a certain age
+                    let time = new Date();
+                    fs.utimes(file, time, time, () => { 
                         finish(req, res, filebase, type, o.format);
-                    }
-                    else {
-                        var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                        zlib.unzip(buffer, function (err, buffer) {
-                            fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
-                                delete g_inFlight[filebase];
-                                finish(req, res, filebase, type, o.format);
-                            });
-                        });
-                    }
+                    });
                 });
-			});
-		}
-		else {
-			finish(req, res, filebase, type, o.format);
-		}
-	}
-	// Case where we need to get tts and lipsync it first
-	else
-	{
-		if (!fs.existsSync(targetFile(filebase, "image", o.format))) {
-            g_inFlight[filebase] = true;
-			var textOnly = o.action.replace(new RegExp("<[^>]*>", "g"), "").replace("  "," "); // e.g. <say>Look <cmd/> here.</say> --> Look here.
-            var neural = false;
-            if (voice.substr(0,6) == "Neural") { // NeuralJoanna or Joanna
-                neural = true;
-                voice = voice.substr(6);
             }
-            var pollyData = {
-              OutputFormat: 'mp3',
-              Text: msToSSML(textOnly),
-              TextType: 'ssml',
-              VoiceId: voice,
-              Engine: (neural ? "neural" : "standard")
-            };
-            console.log("---> calling tts w/ "+JSON.stringify(pollyData));		
-            var ttsTimeStart = new Date();						
-            polly.synthesizeSpeech(pollyData, function (err, data) {
-                if (err) return next(new Error(err.message));
-                var ttsTimeEnd = new Date();						
-                console.log("<--- back from tts - " + (ttsTimeEnd.getTime() - ttsTimeStart.getTime()));
-                fs.writeFile(targetFile(filebase, "audio"), data.AudioStream, function (err) {
-                    if (err) return next(new Error(err.message));
-                    pollyData.OutputFormat = 'json';
-                    pollyData.SpeechMarkTypes = ['viseme'];
-                    console.log("---> calling tts w/ "+JSON.stringify(pollyData));		
-                    var ttsTimeStart = new Date();						
-                    polly.synthesizeSpeech(pollyData, function (err, data) {
+            else {
+                // Cache miss - do the work!
+
+                // Case where there is no tts and we can send straight to animate
+                if (o.action.indexOf("<say>") == -1 || o.lipsync)
+                {
+                    o.key = charAPIKey;
+                    o.zipdata = true;
+                    console.log("---> calling animate w/ "+JSON.stringify(o));
+                    var animateTimeStart = new Date();						
+                    request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                        var animateTimeEnd = new Date();						
+                        console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                        if (err) return next(new Error(body));
+                        if (httpResponse.statusCode >= 400) return next(new Error(body));
+                        fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
+                            if (o.texture) {
+                                // texture requests don't have associated data, so we are done
+                                lockFile.unlock(targetFile(filebase, "lock"), function() {
+                                    finish(req, res, filebase, type, o.format);
+                                });
+                            }
+                            else {
+                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                zlib.unzip(buffer, function (err, buffer) {
+                                    fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
+                                        lockFile.unlock(targetFile(filebase, "lock"), function() {
+                                            finish(req, res, filebase, type, o.format);
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                    });
+                }
+                // Case where we need to get tts and lipsync it first
+                else
+                {
+                    doParallelTTS(o.action, voice, function(err, audioData, lipsyncData) {
                         if (err) return next(new Error(err.message));
-                        var ttsTimeEnd = new Date();						
-                        console.log("<--- back from tts - " + (ttsTimeEnd.getTime() - ttsTimeStart.getTime()));
-                        var zip = new require('node-zip')();
-                        zip.file('lipsync', data.AudioStream);
-                        var dataZipBase64 = zip.generate({base64:true,compression:'DEFLATE'});
-                        // pass the lipsync result to animate.
-                        o.key = charAPIKey;
-                        o.zipdata = true;
-                        o.lipsync = dataZipBase64;
-                        // any other tag conversions
-                        o.action = remainingTagsToXML(cmdTagsToXML(removeSpeechTags(o.action)));
-                        console.log("---> calling animate w/ "+JSON.stringify(o));						
-                        var animateTimeStart = new Date();						
-                        request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                            if (err) return next(new Error(body));
-                            var animateTimeEnd = new Date();
-                            console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                            if (httpResponse.statusCode >= 400) {delete g_inFlight[filebase]; return next(new Error(body));}
-                            var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                            zlib.unzip(buffer, function (err, buffer) {
-                                if (err) return next(new Error(err.message));
-                                fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
+                        fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
+                            if (err) return next(new Error(err.message));
+                            // pass the lipsync result to animate.
+                            o.key = charAPIKey;
+                            o.zipdata = true;
+                            o.lipsync = lipsyncData;
+                            // any other tag conversions
+                            o.action = remainingTagsToXML(cmdTagsToXML(removeSpeechTags(o.action)));
+                            console.log("---> calling animate w/ "+JSON.stringify(o));						
+                            var animateTimeStart = new Date();						
+                            request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                                if (err) return next(new Error(body));
+                                var animateTimeEnd = new Date();
+                                console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                                if (httpResponse.statusCode >= 400) return next(new Error(body));
+                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                zlib.unzip(buffer, function (err, buffer) {
                                     if (err) return next(new Error(err.message));
-                                    fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
+                                    fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
                                         if (err) return next(new Error(err.message));
-                                        delete g_inFlight[filebase];
-                                        finish(req, res, filebase, type, o.format);
+                                        fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
+                                            if (err) return next(new Error(err.message));
+                                            lockFile.unlock(targetFile(filebase, "lock"), function() {
+                                                finish(req, res, filebase, type, o.format);
+                                            });
+                                        });
                                     });
                                 });
                             });
                         });
                     });
-                });
-            }); 
-		}
-		else {
-			finish(req, res, filebase, type, o.format);
-		}
-	}
+                }
+            }
+        });
+    });
 });
 
+function doParallelTTS(action, voice, callback) {
+    var audioData;
+    var lipsyncData;
+    var firstErr = null;
+    var audioDone = false;
+    var phonemesDone = false;
+    
+    // Do both TTS request in parallel to save time
+    
+    var textOnly = action.replace(new RegExp("<[^>]*>", "g"), "").replace("  ", " "); // e.g. <say>Look <cmd/> here.</say> --> Look here.
+    var neural = false;
+    if (voice.substr(0,6) == "Neural") { // NeuralJoanna or Joanna
+        neural = true;
+        voice = voice.substr(6);
+    }
+    var pollyData = {
+        OutputFormat: 'mp3',
+        Text: msToSSML(textOnly),
+        VoiceId: voice,
+        Engine: (neural ? "neural" : "standard"),
+        TextType: "ssml"
+    };
+    console.log("---> calling tts w/ " + JSON.stringify(pollyData));
+    var ttsTimeStart = new Date();
+    
+    polly.synthesizeSpeech(pollyData, function (err, data) {
+        if (err)
+            firstErr = err;
+        else 
+            audioData = data.AudioStream;
+        audioDone = true;
+        if (audioDone && phonemesDone) {
+            var ttsTimeEnd = new Date();
+            console.log("<--- back from tts - " + (ttsTimeEnd.getTime() - ttsTimeStart.getTime()));
+            callback(firstErr, audioData, lipsyncData);
+        }
+    });
+        
+    var pollyData2 = JSON.parse(JSON.stringify(pollyData));
+    pollyData2.OutputFormat = 'json';
+    pollyData2.SpeechMarkTypes = ['viseme'];
+    
+    polly.synthesizeSpeech(pollyData2, function (err, data) {
+        if (err)
+            firstErr = err;
+        else {
+            var zip = new require('node-zip')();
+            zip.file('lipsync', data.AudioStream);
+            lipsyncData = zip.generate({base64: true, compression: 'DEFLATE'});
+        }
+        phonemesDone = true;
+        if (audioDone && phonemesDone) {
+            var ttsTimeEnd = new Date();
+            console.log("<--- back from tts - " + (ttsTimeEnd.getTime() - ttsTimeStart.getTime()));
+            callback(firstErr, audioData, lipsyncData);
+        }
+    });
+}
+    
 function targetFile(filebase, type, format) {
     if (type == "audio") return cachePrefix + filebase + ".mp3";
     else if (type == "image") return cachePrefix + filebase + "." + format;
     else if (type == "data") return cachePrefix + filebase + ".json";
+    else if (type == "lock") return cachePrefix + filebase + ".lock";
 }
 
 function targetMime(type, format) {
@@ -231,19 +269,6 @@ function finish(req, res, filebase, type, format) {
 	res.setHeader('Cache-Control', 'max-age=31536000, public'); // 1 year (long!)
 	res.setHeader('content-type', targetMime(type, format));
 	frstream.pipe(res);        
-}
-
-// Simple nodejs way of dealing with a second request for the same file (but different type) while the files are being generated for a first request.
-var g_inFlight = {};
-function checkInFlight(req, res, filebase, type, format, n) {
-    console.log("WAITING "+n);
-    if (!g_inFlight[filebase]) {
-        finish(req, res, filebase, type, format);
-    }
-    else if (n > 100) { // 10sec
-        console.log("IN-FLIGHT TIMEOUT"); res.statusCode = 500; res.setHeader('content-type', 'text/plain'); res.write("timeout"); res.end(); return;
-    }
-    else setTimeout(function() {checkInFlight(req, res, filebase, type, format, n+1)}, 100);
 }
 
 function msToSSML(s) {
