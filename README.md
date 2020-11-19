@@ -36,7 +36,7 @@ cd charapi
 
 Install the required dependencies:
 ```
-npm update
+npm install
 ```
 
 Create a cache subdirectory:
