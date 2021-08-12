@@ -80,7 +80,7 @@ app.get('/animate', function(req, res, next) {
 
     // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
     // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
-    // if (o.action && o.action.length > 255) throw new Error('limit reached'); // limit message length
+    // if (o.action && o.action.length > 256) throw new Error('limit reached'); // limit message length
     // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
 
     // Things break further on if we don't have defaults on these
@@ -390,6 +390,9 @@ var characterStyles = [
     {"id":"realistic-head", "name":"Realistic Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
     {"id":"realistic-bust", "name":"Realistic Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
     {"id":"realistic-body", "name":"Realistic Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0},
+    {"id":"hd-head", "name":"High Definition", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
+    {"id":"hd-head-2x", "name":"High Definition", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":500, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
+    {"id":"hd-head-3x", "name":"High Definition", "naturalWidth":750, "naturalHeight":600, "recommendedWidth":750, "recommendedHeight":600, "recommendedX":0, "recommendedY":0},
     {"id":"illustrated-head", "name":"Illustrated Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
     {"id":"illustrated-body", "name":"Illustrated Body", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
     {"id":"cs", "name":"Cartoon Solutions", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
@@ -473,7 +476,11 @@ var characters = [
     {"id":"Kim", "style":"classic", "name":"Kim", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/Kim.gif"},
     {"id":"Charlie", "style":"classic", "name":"Charlie", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Charlie.gif"},
     {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
-    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"}
+    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
+    
+    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead2x", "style":"hd-head-2x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead3x", "style":"hd-head-3x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
 ];
 
 function characterStyleObject(id) {

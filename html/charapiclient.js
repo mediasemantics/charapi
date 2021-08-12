@@ -164,6 +164,10 @@ function CharApiClient(divid, params) {
         return playQueue.length;
     };
 
+    this.state = function() {
+        return initialState;
+    };
+
     this.dynamicPlay = function(o) {
         if (audioContext) audioContext.resume();
         if (o) {
@@ -194,6 +198,11 @@ function CharApiClient(divid, params) {
             preloadExecute(o.do, o.say, o.audio, o.lipsync);
         }
     }
+
+    this.setIdleType = function(t) {
+        idleType = t;
+    };
+
 
     function onPlayDone() {
         if (playQueue.length > 0) {
@@ -292,6 +301,10 @@ function CharApiClient(divid, params) {
     var preloading = false;     // url being preloaded
     var preloadTimeout = null;  // defined if a preload timeout is outstanding
 
+    // HD characters
+    var canvasTransformSrc = null;
+    var canvasTransformDst = null;
+    
     function resetInnerVars() {
         gainNode = null;
         audioBuffer = null;
@@ -348,13 +361,17 @@ function CharApiClient(divid, params) {
 
         var addedParams = "";
 
-        var action = "";
         secondaryTextures = {};
-        if (tag || say) {
+        if (tag && !say && tag.substr(0,1) == '<') { // undocumented way to inject low-level actions - used by tester
+            if (saveState) addedParams += "&initialstate=" + initialState;
+            addedParams = addedParams + '&action=' + encodeURIComponent(tag);
+            addedParams = addedParams + '&with=all';
+        }
+        else if (tag || say) {
             setRandomSeed(say);
             if (saveState) addedParams += "&initialstate=" + initialState;
             var actionTemplate = getActionTemplateFromTag(tag, params.character);
-            var action = getActionFromActionTemplate(actionTemplate, say, audio, bob);
+            var action = getActionFromActionTemplate(actionTemplate, say, audio, bob, params.character);
             addedParams = addedParams + '&action=' + encodeURIComponent(action);
             addedParams = addedParams + '&with=all';
         }
@@ -482,7 +499,7 @@ function CharApiClient(divid, params) {
                 secondaryTextures[animData.textures[i]] = null;
         }
     }
-
+    
     function loadSecondaryTextures(addedParams, startAudio) {
         var allLoaded = true;
         var key;
@@ -529,7 +546,7 @@ function CharApiClient(divid, params) {
         setRandomSeed(say);
         if (saveState) addedParams += "&initialstate=" + initialState;
         var actionTemplate = getActionTemplateFromTag(tag, params.character);
-        var action = getActionFromActionTemplate(actionTemplate, say, audio, bob);
+        var action = getActionFromActionTemplate(actionTemplate, say, audio, bob, params.character);
         addedParams = addedParams + '&action=' + encodeURIComponent(action);
         addedParams = addedParams + '&with=all';
         if (say && audio && lipsync) {
@@ -619,8 +636,8 @@ function CharApiClient(divid, params) {
         // simple strategy - when there is stuff to preload, slip one in every second or so - rarely does it lock up load channels for actual loads
         if (!preloadTimeout && preload)
             preloadTimeout = setTimeout(preloadSomeMore, 500);
-		// bob normally withheld for initial segment only
-		if (!bob && bobType == "normal" && supportsBob() && startAudio) bob = true;
+        // bob normally withheld for initial segment only
+        if (!bob && bobType == "normal" && supportsBob() && startAudio) bob = true;
     }
 
     function animate(timestamp) {
@@ -676,17 +693,36 @@ function CharApiClient(divid, params) {
                             if (animData.recipes) {
                                 var recipe = animData.recipes[framerec[0]];
                                 for (var i = 0; i < recipe.length; i++) {
-                                    var key = recipe[i][6];
-                                    if (typeof key == "number") key = animData.textures[key];
+                                    var iTexture = recipe[i][6];
+                                    var textureString = (typeof iTexture == "number" ? animData.textures[iTexture] : "");
+                                    
                                     var src;
-                                    if (key == 'default' && defaultTexture)
+                                    if (textureString == 'default' && defaultTexture)
                                         src = defaultTexture;
-                                    else if (secondaryTextures && secondaryTextures[key])
-                                        src = secondaryTextures[key];
+                                    else if (secondaryTextures && secondaryTextures[textureString])
+                                        src = secondaryTextures[textureString];
                                     else
                                         src = texture;
-                                    var png = (params.format == "png" || animData.layered);
-                                    if (png) {
+                                    
+                                    if (recipe[i][7] !== undefined) {
+                                        var o = updateTransform(src, recipe, i);
+                                        ctx.drawImage(canvasTransformDst,
+                                            0, 0,
+                                            recipe[i][4], recipe[i][5],
+                                            recipe[i][0] + o.x, recipe[i][1] + o.y,
+                                            recipe[i][4], recipe[i][5]);
+                                    }
+                                    else if (params.format == "jpeg") {
+                                        // jpeg - all overlays should avoid the edge pixels
+                                        var buf = i > 1 ? 1 : 0;
+                                        ctx.drawImage(src,
+                                            recipe[i][2] + buf, recipe[i][3] + buf,
+                                            recipe[i][4] - buf*2, recipe[i][5] - buf * 2,
+                                            recipe[i][0] + buf, recipe[i][1] + buf,
+                                            recipe[i][4] - buf*2, recipe[i][5] - buf*2);
+                                    }
+                                    else {
+                                        // png characters replacement overlays with alpha need to first clear bits they replace e.g. hands up
                                         if (!animData.layered) {
                                             ctx.clearRect(
                                                 recipe[i][0], recipe[i][1],
@@ -698,14 +734,6 @@ function CharApiClient(divid, params) {
                                             recipe[i][4], recipe[i][5],
                                             recipe[i][0], recipe[i][1],
                                             recipe[i][4], recipe[i][5]);
-                                    }
-                                    else {
-                                        var buf = i > 1 ? 1 : 0; // jpeg edges are fuzzy
-                                        ctx.drawImage(src,
-                                            recipe[i][2] + buf, recipe[i][3] + buf,
-                                            recipe[i][4] - buf*2, recipe[i][5] - buf * 2,
-                                            recipe[i][0] + buf, recipe[i][1] + buf,
-                                            recipe[i][4] - buf*2, recipe[i][5] - buf*2);
                                     }
                                 }
                             }
@@ -792,22 +820,134 @@ function CharApiClient(divid, params) {
         }
     }
 
+    // Needed for HD characters only
+    function updateTransform(src, recipe, i) {
+        // Gather params
+        var width = recipe[i][4];
+        var height = recipe[i][5];
+        var xSrcImage = recipe[i][0];
+        var ySrcImage = recipe[i][1];
+        var rb = animData.bendRadius;
+        var rt = animData.twistRadius;
+        var bend = - recipe[i][7] / 180 * Math.PI;
+        var twist = recipe[i][8] / 180 * Math.PI;
+        var side = recipe[i][9] / 180 * Math.PI;
+        side += twist * animData.twistToSide;
+        var sideLength = animData.sideLength;
+        var x = recipe[i][10];
+        var y = recipe[i][11];
+        // Bend/twist are a non-linear z-rotate - side and x,y are linear - prepare a matrix for the linear portion.
+        // 0 2 4 
+        // 1 3 5
+        var m = [1, 0, 0, 1, 0, 0];
+        if (side) {
+            addXForm(1, 0, 0, 1, 0, -sideLength, m);
+            addXForm(Math.cos(side), Math.sin(side), -Math.sin(side), Math.cos(side), 0, 0, m);
+            addXForm(1, 0, 0, 1, 0, sideLength, m);
+        }
+        if (x || y) {
+            addXForm(1, 0, 0, 1, x, y, m);
+        }
+        // Assume same size for destination image as for src, and compute where the origin will fall
+        var xDstImage = Math.floor(xSrcImage + rt * Math.sin(twist));
+        var yDstImage = Math.floor(ySrcImage - rb * Math.sin(bend));
+        var deltax = xDstImage - xSrcImage;
+        var deltay = yDstImage - ySrcImage;
+        // Extract the portion of the image we want to a new temp context and get its bits as the source
+        if (!canvasTransformSrc) {
+            canvasTransformSrc = document.createElement('canvas');
+            canvasTransformSrc.width = width;
+            canvasTransformSrc.height = height;
+        }
+        canvasTransformSrc.getContext('2d').drawImage(src, recipe[i][2], recipe[i][3], width, height, 0, 0, width, height);
+        var source = canvasTransformSrc.getContext('2d').getImageData(0, 0, width, height);
+        // Get the bits for a same-size region
+        if (!canvasTransformDst) {
+            canvasTransformDst = document.createElement('canvas');
+            canvasTransformDst.width = width;
+            canvasTransformDst.height = height;
+        }
+        var target = canvasTransformSrc.getContext('2d').createImageData(width, height);
+        // Setup feathering
+        var a = width / 2;
+        var b = height / 2;
+        var xp = width - 5; // 5 pixel feathering
+        var vp = (xp-a)*(xp-a)/(a*a);
+        // Main loop
+        var xDstGlobal,yDstGlobal,xSrcGlobalZ,ySrcGlobalZ,xSrcGlobal,ySrcGlobal,xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
+        var offDst = 0;
+        for (var yDst = 0; yDst < height; yDst++) {
+            for (var xDst = 0; xDst < width; xDst++) {
+                xDstGlobal = xDst + 0.001 - width/2 + deltax ;
+                yDstGlobal = yDst + 0.001 - height/2 + deltay;
+                // z-rotate on an elliptic sphere with radius rb, rt
+                xSrcGlobalZ = rt * Math.sin(Math.asin(xDstGlobal/rt) - twist);
+                ySrcGlobalZ = rb * Math.sin(Math.asin(yDstGlobal/rb) + bend);
+                xSrcGlobal = m[0] * xSrcGlobalZ + m[2] * ySrcGlobalZ + m[4];
+                ySrcGlobal = m[1] * xSrcGlobalZ + m[3] * ySrcGlobalZ + m[5];
+                xSrc = xSrcGlobal + width/2;
+                ySrc = ySrcGlobal + height/2;
+                // bilinear interpolation - https://en.wikipedia.org/wiki/Bilinear_interpolation
+                x1Src = Math.max(Math.min(Math.floor(xSrc), width-1), 0);
+                x2Src = Math.max(Math.min(Math.ceil(xSrc), width-1), 0);
+                y1Src = Math.max(Math.min(Math.floor(ySrc), height-1), 0);
+                y2Src = Math.max(Math.min(Math.ceil(ySrc), height-1), 0);
+                if (x1Src == x2Src) {
+                    if (x1Src == 0) x2Src++; else x1Src--;
+                }
+                if (y1Src == y2Src) {
+                    if (y1Src == 0) y2Src++; else y1Src--;
+                }
+                // ImageData pixel ordering is RGBA
+                offSrc1 = y1Src*4*width + x1Src*4;
+                offSrc2 = y1Src*4*width + x2Src*4;
+                offSrc3 = y2Src*4*width + x1Src*4;
+                offSrc4 = y2Src*4*width + x2Src*4;
+                rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
+                gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
+                bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
+                var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
+                var alpha;
+                if (v > 1) 
+                    alpha = 0;
+                else if (v >= vp && v <= 1) 
+                    alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
+                else
+                    alpha = 255;
+                target.data[offDst] = rint; offDst++;
+                target.data[offDst] = gint; offDst++;
+                target.data[offDst] = bint; offDst++;
+                target.data[offDst] = alpha; offDst++;
+            }
+        }       
+        canvasTransformDst.getContext('2d').putImageData(target, 0, 0);
+        return {x:deltax, y:deltay};
+    }
+    
+    function addXForm(a, b, c, d, e, f, m) {
+        // a c e   ma mc me
+        // b d f . mb md mf  
+        // 0 0 1   0  0  1 
+        m[0] = a * m[0] + c * m[1];     m[2] = a * m[2] + c * m[3];     m[4] = a * m[4] + c * m[5] + e; 
+        m[1] = b * m[0] + d * m[1];     m[3] = b * m[2] + d * m[3];     m[5] = b * m[4] + d * m[5] + f;
+    }
+    
     function isVector() {
         var style = characterObject(params.character).style;
         return style.split("-")[0] == "illustrated" || style == "cs" || style == "classic";
     }
 
     function getIdlesFromStyle(style) {
-        // Because we are not loading env.json
         var styleMajor = style.split("-")[0];
-        if (styleMajor == "realistic" || styleMajor == "cgi" /*|| styleMajor == "illustrated"*/) {
+        if (styleMajor == "realistic" || styleMajor == "cgi" /*|| styleMajor == "illustrated"*/ || styleMajor == "hd") {
             var a = [];
             for (var i = 1; i <= 3; i++)
                 a.push("headidle"+i);
             var styleMinor = style.split("-")[1];
-            if (styleMinor == "body" || styleMinor == "bust")
-            for (i = 1; i <= 3; i++)
-                a.push("bodyidle1"); // equally likely
+            if (styleMinor == "body" || styleMinor == "bust") {
+                for (i = 1; i <= 3; i++)
+                    a.push("bodyidle1");
+            }
             return a;
         }
         else return []; // never include blink
@@ -816,8 +956,8 @@ function CharApiClient(divid, params) {
     function supportsBob() {
         // used in standalone to force the issue
         var style = characterObject(params.character).style;
-        var idles = getIdlesFromStyle(style);
-        return (idles.indexOf("headidle1") != -1);
+        var styleMajor = style.split("-")[0];
+        return (styleMajor == "realistic" || styleMajor == "cgi" || styleMajor == "hd");
     }
 
     //
@@ -839,24 +979,29 @@ function CharApiClient(divid, params) {
         if (loaded && !loading && !animating && !playShield && !atLeastOneLoadError) {
             if (timeSinceLastAction > 1500 + Math.random() * 3500) {  // no more than 5 seconds with no action whatsoever
                 timeSinceLastAction = 0;
-                // there will be action - will it be a blink? They must occur at a certain frequency.
-                if (idleType != "none" && timeSinceLastBlink > 5000 + Math.random() * 5000) {
+                var style = characterObject(params.character).style;
+                var hd = style.split("-")[0] == "hd";
+                // There will be action - will it be a blink? Blinks must occur at a certain frequency. But hd characters incorporate blink into idle actions.
+                if (idleType != "none" && timeSinceLastBlink > 5000 + Math.random() * 5000 && !hd) {
                     timeSinceLastBlink = 0;
                     execute("blink", "", null, null, true, onIdleComplete.bind(null));
                 }
-                // or another idle routine
+                // Or another idle routine?
                 else if (idleType == "normal") {
-                    var style = characterObject(params.character).style;
                     var idles = getIdlesFromStyle(style);
                     var headidle = (idles.indexOf("headidle1") != -1);
                     var idle = null;
-                    // pick an idle that does not repeat - favor a headidle at first
+                    // pick an idle that does not repeat - favor a headidle1 at first
                     if (idles.length > 0) {
-                        for (var guard = 10; guard > 0; guard--) {
-                            idle = idles[Math.floor(Math.random() * idles.length)];
-                            if (idle == lastIdle) continue;
-                            if (!lastIdle && idle.substr(0,8) != "headidle") continue;
-                            break;
+                        if (!lastIdle) { 
+                            idle = "headidle1";
+                        }
+                        else {
+                            for (var guard = 10; guard > 0; guard--) {
+                                idle = idles[Math.floor(Math.random() * idles.length)];
+                                if (idle == lastIdle) continue;
+                                break;
+                            }
                         }
                     }
                     if (idle) {
@@ -1015,6 +1160,9 @@ function CharApiClient(divid, params) {
     {"id":"realistic-head", "name":"Realistic Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
     {"id":"realistic-bust", "name":"Realistic Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
     {"id":"realistic-body", "name":"Realistic Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0},
+    {"id":"hd-head", "name":"High Definition", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
+    {"id":"hd-head-2x", "name":"High Definition", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":500, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
+    {"id":"hd-head-3x", "name":"High Definition", "naturalWidth":750, "naturalHeight":600, "recommendedWidth":750, "recommendedHeight":600, "recommendedX":0, "recommendedY":0},
     {"id":"illustrated-head", "name":"Illustrated Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
     {"id":"illustrated-body", "name":"Illustrated Body", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
     {"id":"cs", "name":"Cartoon Solutions", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
@@ -1098,7 +1246,11 @@ function CharApiClient(divid, params) {
     {"id":"Kim", "style":"classic", "name":"Kim", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/Kim.gif"},
     {"id":"Charlie", "style":"classic", "name":"Charlie", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Charlie.gif"},
     {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
-    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"}
+    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
+    
+    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead2x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead3x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
     ]
 
     function characterObject(id) {
@@ -1155,12 +1307,15 @@ function CharApiClient(divid, params) {
 
         {"id":"head-nod", "category":"head", "name":"Head Nod", "xml":"<eyeswide/><headnod/><eyesnormal/>+{max:0,user:1}"},
         {"id":"head-shake", "category":"head", "name":"Head Shake", "xml":"<eyesnarrow/><headshake/><eyesnormal/>+{max:0,user:1}"},
-        {"id":"head-right", "category":"head", "name":"Head Right", "xml":"<eyeswide/><headleft/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
-        {"id":"head-left", "category":"head", "name":"Head Left", "xml":"<eyeswide/><headright/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
-        {"id":"head-down", "category":"head", "name":"Head Down", "xml":"<eyeswide/><headdown/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
-        {"id":"head-up", "category":"head", "name":"Head Up", "xml":"<eyeswide/><headup/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
-        {"id":"head-down-right", "category":"head", "name":"Head Down Right", "xml":"<eyeswide/><headtiltleft/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
-        {"id":"head-down-left", "category":"head", "name":"Head Down Left", "xml":"<eyeswide/><headtiltright/>+{max:10}+<eyesnormal/><headuser/>+{max:0,user:1}"},
+        {"id":"head-right", "category":"head", "name":"Head Right", "xml":"<eyeswide/><headleft/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+        {"id":"head-left", "category":"head", "name":"Head Left", "xml":"<eyeswide/><headright/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+        {"id":"head-down", "category":"head", "name":"Head Down", "xml":"<eyeswide/><headdown/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+        {"id":"head-up", "category":"head", "name":"Head Up", "xml":"<eyeswide/><headup/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+        {"id":"head-down-right", "category":"head", "name":"Head Down Right", "xml":"<eyeswide/><headtiltleft/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+        {"id":"head-down-left", "category":"head", "name":"Head Down Left", "xml":"<eyeswide/><headtiltright/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
+
+        {"id":"head-nod", "category":"head-hd", "name":"Head Nod", "xml":"<head3 enter=\"eyeswide\"/><head4 preserve=\"eyeswide\"/><head3 preserve=\"eyeswide\"/><head0 exit=\"eyeswide\"/>+{max:0,user:1}"},
+        {"id":"head-shake", "category":"head-hd", "name":"Head Shake", "xml":"<head1 enter=\"eyesnarrow\"/><head2 preserve=\"eyesnarrow\"/><head1 preserve=\"eyesnarrow\"/><head0 exit=\"eyesnarrow\"/>+{max:0,user:1}"},
 
         {"id":"surprise", "category":"emotive", "name":"Surprise", "xml":"<surprise/>+{max:0,user:1}"},
         {"id":"angry", "category":"emotive", "name":"Angry", "xml":"<handsinback/><angry/><handsbyside/>+{max:0,user:1}"},
@@ -1206,10 +1361,15 @@ function CharApiClient(divid, params) {
         {"id":"code", "category":"misc", "name":"JavaScript"},
 
         {"id":"blink", "category":"idle", "name":"Blink", "xml":"<blink/>"},
-        {"id":"headidle1", "category":"idle", "name":"Head Idle 1", "xml":"<headrandom1/><pause cms=\"300\"/><headuser/>"},
-        {"id":"headidle2", "category":"idle", "name":"Head Idle 2", "xml":"<headrandom4/><pause cms=\"300\"/><headuser/>"},
-        {"id":"headidle3", "category":"idle", "name":"Head Idle 3", "xml":"<headrandom1/><pause cms=\"300\"/><headrandom4/><pause cms=\"300\"/><headuser/>"},
-        {"id":"bodyidle1", "category":"idle", "name":"Body Idle 1", "xml":"<headrandom1/><swayarms/><headuser/>"}
+        
+        {"id":"headidle1", "category":"idle", "name":"Head Idle 1", "xml":"<headrandom1/><pause cms=\"300\"/><headnormal/>"},
+        {"id":"headidle2", "category":"idle", "name":"Head Idle 2", "xml":"<headrandom4/><pause cms=\"300\"/><headnormal/>"},
+        {"id":"headidle3", "category":"idle", "name":"Head Idle 3", "xml":"<headrandom1/><pause cms=\"300\"/><headrandom4/><pause cms=\"300\"/><headnormal/>"},
+        {"id":"bodyidle1", "category":"idle", "name":"Body Idle 1", "xml":"<headrandom1/><swayarms/><headnormal/>"},
+        
+        {"id":"headidle1", "category":"idle-hd", "name":"Head Idle 1", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head0/>"},
+        {"id":"headidle2", "category":"idle-hd", "name":"Head Idle 2", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head11/><pause cms=\"500\"/> <head12/><head0 with=\"blink\"/><pause cms=\"500\"/> <head12/><pause/> <head10/><pause cms=\"750\"/> <head9/><head11/><head0 with=\"blink\"/>"},
+        {"id":"headidle3", "category":"idle-hd", "name":"Head Idle 3", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head11/><pause cms=\"500\"/> <head12/><head0 with=\"blink\"/><pause cms=\"500\"/> <head12/><pause/> <head10/><pause cms=\"750\"/> <head9/><head11/><head0 with=\"blink\"/>"}
     ];
 
     var actionCategories = [
@@ -1219,12 +1379,15 @@ function CharApiClient(divid, params) {
         {"id":"point", "name":"Point", "characterStyles":["realistic-body","cgi-body","classic"]},
         {"id":"point-cs", "name":"Point", "characterStyles":["cs"]},
         {"id":"eyes", "name":"Eyes"},
-        {"id":"head", "name":"Head"},
+        {"id":"head", "name":"Head", "characterStyles":["realistic-head","realistic-body","realistic-bust","cgi-head","cgi-body","cgi-bust","classic"]},
+        {"id":"head-hd", "name":"Head", "characterStyles":["hd-head","hd-body","hd-bust"]},
         {"id":"emotive", "name":"Emotive", "characterStyles":["realistic-body","realistic-bust","illustrated-body","cgi-body","cgi-bust","classic"]},
         {"id":"emotive-head", "name":"Emotive", "characterStyles":["realistic-head","illustrated-head","cgi-head"]},
         {"id":"emotive-cs", "name":"Emotive", "characterStyles":["cs"]},
         {"id":"conversational", "name":"Conversational", "characterStyles":["realistic-body","realistic-bust","illustrated-body","cgi-body","cgi-bust","classic"]},
-        {"id":"conversational-cs", "name":"Conversational", "characterStyles":["cs"]}
+        {"id":"conversational-cs", "name":"Conversational", "characterStyles":["cs"]},
+        {"id":"idle", "name":"Idle", "characterStyles":["realistic-head","realistic-body","realistic-bust","cgi-head","cgi-body","cgi-bust"]},
+        {"id":"idle-hd", "name":"Idle", "characterStyles":["hd-head","hd-body","hd-bust"]},
     ];
 
     function actionCategoryObject(id) {
@@ -1263,7 +1426,9 @@ function CharApiClient(divid, params) {
         return x - Math.floor(x);
     }
 
-    function getActionFromActionTemplate(action, say, audiotag, bob) {
+    function getActionFromActionTemplate(action, say, audiotag, bob, character) {
+        var style = characterObject(character).style;
+        var hd = style.split("-")[0] == "hd";
         if (say || audiotag) {
             say = say||"";
             //console.log("seed="+seed+" bob="+bob);
@@ -1280,31 +1445,50 @@ function CharApiClient(divid, params) {
                     s += a[i]; // regular action commands
                 }
                 else {
-                    var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"'));
+                    var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"')); // quick parse
+                    if (rec.silence) {
+                        s += '[silence ' + rec.silence + 'ms]';
+                        continue;
+                    }                    
                     var c = rec.max;
                     // Case where there were no (or few) words - i.e. user used an audio file but neglected to give us a script, or an unusually short script - insert a pause
                     if (c > 0 && b.length <= 3)
                         s += "<pause/>";
-                    // peel off up to max words (or all the words)
-                    while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
-                        s += b[j];  // add next word
-                        if (j < b.length - 1) { // if this is not the last word, add a space OR a command
-                            if (!rec.user)
-                                s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
-                            else {
-                                if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
-                                    s += randomHead();
-                                }
-                                else if (wordsSinceBlink > 10) {
-                                    s += " <blink/> ";
-                                    wordsSinceBlink = 0;
-                                }
-                                else s += " ";
+                    if (hd) {
+                        if (rec.user)
+                            s += '<fill name="speak1"/> ';
+                        // peel off up to max words (or all the words)
+                        while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
+                            s += b[j];  // add next word
+                            if (j < b.length - 1) { // if this is not the last word, add a space
+                                s += " ";
                             }
+                            j++;
+                            c--;
                         }
-                        wordsSinceBlink++;
-                        j++;
-                        c--;
+                    }
+                    else {
+                        // peel off up to max words (or all the words)
+                        while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
+                            s += b[j];  // add next word
+                            if (j < b.length - 1) { // if this is not the last word, add a space OR a command
+                                if (!rec.user)
+                                    s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
+                                else {
+                                    if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
+                                        s += randomHead();
+                                    }
+                                    else if (wordsSinceBlink > 10) {
+                                        s += " <blink/> ";
+                                        wordsSinceBlink = 0;
+                                    }
+                                    else s += " ";
+                                }
+                            }
+                            wordsSinceBlink++;
+                            j++;
+                            c--;
+                        }
                     }
                 }
             }
@@ -1345,7 +1529,7 @@ function CharApiClient(divid, params) {
 
     function randomHead() {
         var n = (1+Math.floor(seededRandom()*4));
-        if (n == 3) return " <headuser/> "
+        if (n == 3) return " <headnormal/> "
         else return " <headrandom"+n+"/> ";
     }
 
