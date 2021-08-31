@@ -478,9 +478,9 @@ var characters = [
     {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
     {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
     
-    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead2x", "style":"hd-head-2x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead3x", "style":"hd-head-3x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead2x", "style":"hd-head-2x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead3x", "style":"hd-head-3x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
 ];
 
 function characterStyleObject(id) {

@@ -302,8 +302,8 @@ function CharApiClient(divid, params) {
     var preloadTimeout = null;  // defined if a preload timeout is outstanding
 
     // HD characters
-    var canvasTransformSrc = null;
-    var canvasTransformDst = null;
+    var canvasTransformSrc = [];
+    var canvasTransformDst = [];
     
     function resetInnerVars() {
         gainNode = null;
@@ -706,7 +706,8 @@ function CharApiClient(divid, params) {
                                     
                                     if (recipe[i][7] !== undefined) {
                                         var o = updateTransform(src, recipe, i);
-                                        ctx.drawImage(canvasTransformDst,
+                                        var process = recipe[i].length == 13 ? recipe[i][7] : 1;
+                                        ctx.drawImage(canvasTransformDst[process-1],
                                             0, 0,
                                             recipe[i][4], recipe[i][5],
                                             recipe[i][0] + o.x, recipe[i][1] + o.y,
@@ -827,15 +828,17 @@ function CharApiClient(divid, params) {
         var height = recipe[i][5];
         var xSrcImage = recipe[i][0];
         var ySrcImage = recipe[i][1];
-        var rb = animData.bendRadius;
-        var rt = animData.twistRadius;
-        var bend = - recipe[i][7] / 180 * Math.PI;
-        var twist = recipe[i][8] / 180 * Math.PI;
-        var side = recipe[i][9] / 180 * Math.PI;
+        var process = recipe[i].length == 13 ? recipe[i][7] : 1;
+        var rb = process == 1 ? animData.mouthBendRadius : (process == 2 ? animData.jawBendRadius : 0);
+        var rt = process == 1 ? animData.mouthTwistRadius : (process == 2 ? animData.jawTwistRadius : 0);
+        var compat = recipe[i].length == 13 ? 1 : 0;
+        var bend = - recipe[i][7+compat] / 180 * Math.PI;
+        var twist = recipe[i][8+compat] / 180 * Math.PI;
+        var side = recipe[i][9+compat] / 180 * Math.PI;
         side += twist * animData.twistToSide;
         var sideLength = animData.sideLength;
-        var x = recipe[i][10];
-        var y = recipe[i][11];
+        var x = recipe[i][10+compat];
+        var y = recipe[i][11+compat];
         // Bend/twist are a non-linear z-rotate - side and x,y are linear - prepare a matrix for the linear portion.
         // 0 2 4 
         // 1 3 5
@@ -854,20 +857,21 @@ function CharApiClient(divid, params) {
         var deltax = xDstImage - xSrcImage;
         var deltay = yDstImage - ySrcImage;
         // Extract the portion of the image we want to a new temp context and get its bits as the source
-        if (!canvasTransformSrc) {
-            canvasTransformSrc = document.createElement('canvas');
-            canvasTransformSrc.width = width;
-            canvasTransformSrc.height = height;
+        if (!canvasTransformSrc[process-1]) {
+            canvasTransformSrc[process-1] = document.createElement('canvas');
+            canvasTransformSrc[process-1].width = width;
+            canvasTransformSrc[process-1].height = height;
         }
-        canvasTransformSrc.getContext('2d').drawImage(src, recipe[i][2], recipe[i][3], width, height, 0, 0, width, height);
-        var source = canvasTransformSrc.getContext('2d').getImageData(0, 0, width, height);
+        canvasTransformSrc[process-1].getContext('2d').clearRect(0, 0, width, height);
+        canvasTransformSrc[process-1].getContext('2d').drawImage(src, recipe[i][2], recipe[i][3], width, height, 0, 0, width, height);
+        var source = canvasTransformSrc[process-1].getContext('2d').getImageData(0, 0, width, height);
         // Get the bits for a same-size region
-        if (!canvasTransformDst) {
-            canvasTransformDst = document.createElement('canvas');
-            canvasTransformDst.width = width;
-            canvasTransformDst.height = height;
+        if (!canvasTransformDst[process-1]) {
+            canvasTransformDst[process-1] = document.createElement('canvas');
+            canvasTransformDst[process-1].width = width;
+            canvasTransformDst[process-1].height = height;
         }
-        var target = canvasTransformSrc.getContext('2d').createImageData(width, height);
+        var target = canvasTransformSrc[process-1].getContext('2d').createImageData(width, height);
         // Setup feathering
         var a = width / 2;
         var b = height / 2;
@@ -906,21 +910,31 @@ function CharApiClient(divid, params) {
                 rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
                 gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
                 bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
-                var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
                 var alpha;
-                if (v > 1) 
-                    alpha = 0;
-                else if (v >= vp && v <= 1) 
-                    alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
-                else
+                if (process == 1) {
+                    var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
+                    if (v > 1) 
+                        alpha = 0;
+                    else if (v >= vp && v <= 1) 
+                        alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
+                    else
+                        alpha = 255;
+                }
+                else if (process == 2) {
+                    alpha = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+3] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+3] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+3] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+3]);
+                    if (yDst < height/10)
+                        alpha = Math.min(alpha, yDst /  (height/10) * 255);
+                }
+                else {
                     alpha = 255;
+                }
                 target.data[offDst] = rint; offDst++;
                 target.data[offDst] = gint; offDst++;
                 target.data[offDst] = bint; offDst++;
                 target.data[offDst] = alpha; offDst++;
             }
         }       
-        canvasTransformDst.getContext('2d').putImageData(target, 0, 0);
+        canvasTransformDst[process-1].getContext('2d').putImageData(target, 0, 0);
         return {x:deltax, y:deltay};
     }
     
@@ -1248,9 +1262,9 @@ function CharApiClient(divid, params) {
     {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
     {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
     
-    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead2x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead3x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead2x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
+    {"id":"MichelleHead3x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
     ]
 
     function characterObject(id) {
