@@ -26,166 +26,205 @@ var app = express();
 app.use(bodyParser.json({limit: '1mb'}));
 app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
-// The Character API endpoint
+// The Character API endpoints
+
+var urlCatalog = "http://mediasemantics.com/catalog";
 var urlAnimate = "http://mediasemantics.com/animate";
+
+// The animation catalog
+var catalog = null;
+var catalogTimestamp = null;
+var CATALOG_TTL = 60 * 60 * 1000; // 1 hour
 
         
 app.get('/animate', function(req, res, next) {
     console.log("animate");
     if (req.query.type != "audio" && req.query.type != "image" && req.query.type != "data") req.query.type = "image"; // default to image
-    
-    var character = "SusanHead";
-    
-    // TODO - delete this line if your character is always the same
-    if (req.query.character) character = req.query.character
-    
-    // These parameters can be derived from the character if they are not supplied
-    var charobj = characterObject(character);
-    var charstyleobj = characterStyleObject(charobj.style);
-	var width = req.query.width || charstyleobj.naturalWidth;
-	var height = req.query.height || charstyleobj.naturalHeight;
-	var version = req.query.version || charobj.version;
-	var format = req.query.format || (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
-    
-    // Determine an appropriate voice for your character - or you can fix it here instead
-    var voice = charobj.defaultVoice;
 
-    // Allow client to override voice. TODO - delete this line if your voice is always the same.
-    if (req.query.voice) voice = req.query.voice;
+    loadCatalogIfNecessary(function(e){
+        if (e) return next(e);
+        
+        var character;
+        
+        // The client specifies the character and the version - but server is free to igore this.
+        if (req.query.character) character = req.query.character;
+        // The client specifies a precise version - this lets you clear all levels of cache by upgrading the client version
+        if (req.query.version) version = req.query.version;
+        
+        // These parameters can be derived from the character if they are not supplied
+        var charobj = characterObject(character);
+        var charstyleobj = characterStyleObject(charobj.style);
+        var width = req.query.width || charstyleobj.naturalWidth;
+        var height = req.query.height || charstyleobj.naturalHeight;
+        var format = req.query.format || (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
+        
+        // Determine an appropriate voice for your character - or you can fix it here instead
+        var voice = charobj.defaultVoice;
+
+        // Allow client to override voice. TODO - delete this line if your voice is always the same.
+        if (req.query.voice) voice = req.query.voice;
+        
+        // Build a hash of all parameters to send to the Character API
+        var o = {
+            "character":character,
+            "version":version,
+            "return":"true",
+            "recover":"true",
+            "format":format,
+            "width":width.toString(),
+            "height":height.toString(),
+            "charx":"0",
+            "chary":"0",
+            "fps":"24",
+            "quality":"95",
+            "backcolor":"ffffff"
+        };
     
-    // Build a hash of all parameters to send to the Character API
-    var o = {
-        "character":character,
-		"version":version,
-		"return":"true",
-		"recover":"true",
-		"format":format,
-		"width":width.toString(),
-		"height":height.toString(),
-		"charx":"0",
-		"chary":"0",
-		"fps":"24",
-		"quality":"95",
-		"backcolor":"ffffff"
-    };
-    
-    // Add to that any other parameters that are variable, from the client
-    if (req.query.action) o.action = req.query.action;
-    if (req.query.texture) o.texture = req.query.texture;
-    if (req.query.with) o.with = req.query.with;
-    if (req.query.charx) o.charx = req.query.charx.toString();
-    if (req.query.chary) o.chary = req.query.chary.toString();
-    if (req.query.lipsync) o.lipsync = req.query.lipsync;
-    if (req.query.initialstate) o.initialstate = req.query.initialstate;
+        // Add to that any other parameters that are variable, from the client
+        if (req.query.texture) o.texture = req.query.texture;
+        if (req.query.with) o.with = req.query.with;
+        if (req.query.charx) o.charx = req.query.charx.toString();
+        if (req.query.chary) o.chary = req.query.chary.toString();
+        if (req.query.lipsync) o.lipsync = req.query.lipsync;
+        if (req.query.initialstate) o.initialstate = req.query.initialstate;
 
-    // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
-    // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
-    // if (o.action && o.action.length > 256) throw new Error('limit reached'); // limit message length
-    // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
+        // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
+        // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
+        // if (o.action && o.action.length > 256) throw new Error('limit reached'); // limit message length
+        // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
 
-    // Things break further on if we don't have defaults on these
-    if (!o.format) o.format = "png";
-    if (!o.action) o.action = "";
-    
-    // Now use all these parameters to create a hash that becomes the file type
-    var crypto = require('crypto');
-    var hash = crypto.createHash('md5');
-    for (var key in o)
-        hash.update(o[key]);
-    hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
-    if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes to defeat browser caching
-    var filebase = hash.digest("hex");
-    var type = req.query.type;                          // This is the type of file actually requested - audio, image, or data
-    var format = o.format;                              // "png" or "jpeg"
+        // Things break further on if we don't have defaults on these
+        if (!o.format) o.format = "png";
+        if (!o.action) o.action = "";
+        
+        // Derive the low-level action from the high-level tag+say pair
+        var action;
+        setRandomSeed(req.query.say);
+        var actionTemplate = getActionTemplateFromTag(req.query.tag, o.character);
+        action = getActionFromActionTemplate(actionTemplate, req.query.say, req.query.audio, req.query.bob||true, o.character);
+        o.action = action;
+        if (action) o["with"] = "all";  // all but the initial empty action requests that output be generated that assumes we will fetch all textures
+        
+        // Now use all these parameters to create a hash that becomes the file type
+        var crypto = require('crypto');
+        var hash = crypto.createHash('md5');
+        for (var key in o)
+            hash.update(o[key]);
+        hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
+        if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes, to defeat browser caching
+        var filebase = hash.digest("hex");
+        var type = req.query.type;                          // This is the type of file actually requested - audio, image, or data
+        var format = o.format;                              // "png" or "jpeg"
 
-	lockFile.lock(targetFile(filebase, "lock"), {}, function() {
-        let file = targetFile(filebase, type, format);
-        fs.exists(file, function(exists) {
-            if (exists) {
-                lockFile.unlock(targetFile(filebase, "lock"), function() {
-                    // "touch" each file we return - you can use a cron to delete files older than a certain age
-                    let time = new Date();
-                    fs.utimes(file, time, time, () => { 
-                        finish(req, res, filebase, type, o.format);
-                    });
-                });
-            }
-            else {
-                // Cache miss - do the work!
-
-                // Case where there is no tts and we can send straight to animate
-                if (o.action.indexOf("<say>") == -1 || o.lipsync)
-                {
-                    o.key = charAPIKey;
-                    o.zipdata = true;
-                    console.log("---> calling animate w/ "+JSON.stringify(o));
-                    var animateTimeStart = new Date();						
-                    request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                        var animateTimeEnd = new Date();						
-                        console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                        if (err) return next(new Error(body));
-                        if (httpResponse.statusCode >= 400) return next(new Error(body));
-                        fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
-                            if (o.texture) {
-                                // texture requests don't have associated data, so we are done
-                                lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                    finish(req, res, filebase, type, o.format);
-                                });
-                            }
-                            else {
-                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                                zlib.unzip(buffer, function (err, buffer) {
-                                    fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
-                                        lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                            finish(req, res, filebase, type, o.format);
-                                        });
-                                    });
-                                });
-                            }
+        lockFile.lock(targetFile(filebase, "lock"), {}, function() {
+            let file = targetFile(filebase, type, format);
+            fs.exists(file, function(exists) {
+                if (exists) {
+                    lockFile.unlock(targetFile(filebase, "lock"), function() {
+                        // "touch" each file we return - you can use a cron to delete files older than a certain age
+                        let time = new Date();
+                        fs.utimes(file, time, time, () => { 
+                            finish(req, res, filebase, type, o.format);
                         });
                     });
                 }
-                // Case where we need to get tts and lipsync it first
-                else
-                {
-                    doParallelTTS(o.action, voice, function(err, audioData, lipsyncData) {
-                        if (err) return next(new Error(err.message));
-                        fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
-                            if (err) return next(new Error(err.message));
-                            // pass the lipsync result to animate.
-                            o.key = charAPIKey;
-                            o.zipdata = true;
-                            o.lipsync = lipsyncData;
-                            // any other tag conversions
-                            o.action = remainingTagsToXML(cmdTagsToXML(removeSpeechTags(o.action)));
-                            console.log("---> calling animate w/ "+JSON.stringify(o));						
-                            var animateTimeStart = new Date();						
-                            request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                                if (err) return next(new Error(body));
-                                var animateTimeEnd = new Date();
-                                console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                                if (httpResponse.statusCode >= 400) return next(new Error(body));
-                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                                zlib.unzip(buffer, function (err, buffer) {
-                                    if (err) return next(new Error(err.message));
-                                    fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
-                                        if (err) return next(new Error(err.message));
-                                        fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
-                                            if (err) return next(new Error(err.message));
+                else {
+                    // Cache miss - do the work!
+
+                    // Case where there is no tts and we can send straight to animate
+                    if (o.action.indexOf("<say>") == -1 || o.lipsync)
+                    {
+                        o.key = charAPIKey;
+                        o.zipdata = true;
+                        console.log("---> calling animate w/ "+JSON.stringify(o));
+                        var animateTimeStart = new Date();						
+                        request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                            var animateTimeEnd = new Date();						
+                            console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                            if (err) return next(new Error(body));
+                            if (httpResponse.statusCode >= 400) return next(new Error(body));
+                            fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
+                                if (o.texture) {
+                                    // texture requests don't have associated data, so we are done
+                                    lockFile.unlock(targetFile(filebase, "lock"), function() {
+                                        finish(req, res, filebase, type, o.format);
+                                    });
+                                }
+                                else {
+                                    var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                    zlib.unzip(buffer, function (err, buffer) {
+                                        fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
                                             lockFile.unlock(targetFile(filebase, "lock"), function() {
                                                 finish(req, res, filebase, type, o.format);
+                                            });
+                                        });
+                                    });
+                                }
+                            });
+                        });
+                    }
+                    // Case where we need to get tts and lipsync it first
+                    else
+                    {
+                        doParallelTTS(o.action, voice, function(err, audioData, lipsyncData) {
+                            if (err) return next(new Error(err.message));
+                            fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
+                                if (err) return next(new Error(err.message));
+                                // pass the lipsync result to animate.
+                                o.key = charAPIKey;
+                                o.zipdata = true;
+                                o.lipsync = lipsyncData;
+                                // any other tag conversions
+                                o.action = remainingTagsToXML(cmdTagsToXML(removeSpeechTags(o.action)));
+                                console.log("---> calling animate w/ "+JSON.stringify(o));						
+                                var animateTimeStart = new Date();						
+                                request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                                    if (err) return next(new Error(body));
+                                    var animateTimeEnd = new Date();
+                                    console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                                    if (httpResponse.statusCode >= 400) return next(new Error(body));
+                                    var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                    zlib.unzip(buffer, function (err, buffer) {
+                                        if (err) return next(new Error(err.message));
+                                        fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
+                                            if (err) return next(new Error(err.message));
+                                            fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
+                                                if (err) return next(new Error(err.message));
+                                                lockFile.unlock(targetFile(filebase, "lock"), function() {
+                                                    finish(req, res, filebase, type, o.format);
+                                                });
                                             });
                                         });
                                     });
                                 });
                             });
                         });
-                    });
+                    }
                 }
-            }
+            });
         });
     });
 });
+
+function loadCatalogIfNecessary(callback) {
+    var timestampNow = (new Date()).getTime();
+    if (!catalog || !catalogTimestamp || catalogTimestamp - timestampNow > CATALOG_TTL) {
+        console.log("---> calling catalog");
+        var catalogTimeStart = new Date();						
+        request.get(urlCatalog + "?key="+charAPIKey, function(err, httpResponse, body) {
+            var catalogTimeEnd = new Date();						
+            console.log("<--- back from catalog - " + (catalogTimeEnd.getTime() - catalogTimeStart.getTime()));
+            if (err) return callback(err);
+            if (httpResponse.statusCode != 200) return callback(new Error(body));
+            catalog = JSON.parse(body);
+            catalogTimestamp = timestampNow;
+            callback(null);
+        });
+    }
+    else {
+        callback(null);
+    }
+}
 
 function doParallelTTS(action, voice, callback) {
     var audioData;
@@ -384,119 +423,168 @@ function remainingTagsToXML(s) {
     return s;
 }
 
-// This is handy character data, but is subject to change
-
-var characterStyles = [
-    {"id":"realistic-head", "name":"Realistic Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"realistic-bust", "name":"Realistic Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
-    {"id":"realistic-body", "name":"Realistic Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0},
-    {"id":"hd-head", "name":"High Definition", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"hd-head-2x", "name":"High Definition", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":500, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"hd-head-3x", "name":"High Definition", "naturalWidth":750, "naturalHeight":600, "recommendedWidth":750, "recommendedHeight":600, "recommendedX":0, "recommendedY":0},
-    {"id":"illustrated-head", "name":"Illustrated Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"illustrated-body", "name":"Illustrated Body", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"cs", "name":"Cartoon Solutions", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"classic", "name":"Classic Cartoon", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"cgi-head", "name":"CG Cartoon Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"cgi-bust", "name":"CG Cartoon Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
-    {"id":"cgi-body", "name":"CG Cartoon Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0}
-];
-
-var characters = [
-    {"id":"SteveHead", "style":"realistic-head", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveHead.gif"},
-    {"id":"SusanHead", "style":"realistic-head", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanHead.gif"},
-    {"id":"RobertHead", "style":"realistic-head", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertHead.gif"},
-    {"id":"AnnaHead", "style":"realistic-head", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaHead.gif"},
-    {"id":"BenHead", "style":"realistic-head", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenHead.gif"},
-    {"id":"AngelaHead", "style":"realistic-head", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaHead.gif"},
-    {"id":"GeneHead", "style":"realistic-head", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneHead.gif"},
-    {"id":"KateHead", "style":"realistic-head", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateHead.gif"},
-    {"id":"LeeHead", "style":"realistic-head", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeHead.gif"},
-    {"id":"LilyHead", "style":"realistic-head", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyHead.gif"},
-
-    {"id":"CarlaHead", "style":"cgi-head", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaHead.gif"},
-    {"id":"CarlHead", "style":"cgi-head", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlHead.gif"},
-
-    {"id":"TomHead", "style":"illustrated-head", "format":"head", "name":"Tom", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/TomHead.gif"},
-    {"id":"TashaHead", "style":"illustrated-head", "format":"head", "name":"Tasha", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/TashaHead.gif"},
-    {"id":"RickHead", "style":"illustrated-head", "format":"head", "name":"Rick", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"2.2", "thumb":"img/characters/RickHead.gif"},
-    {"id":"JimHead", "style":"illustrated-head", "format":"head", "name":"Jim", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/JimHead.gif"},
-    {"id":"MeganHead", "style":"illustrated-head", "format":"head", "name":"Megan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MeganHead.gif"},
-    {"id":"KarmaJon", "style":"illustrated-head", "format":"head", "name":"Jon", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Custom.gif", "tag":"karma"},
-
-    {"id":"SteveBust", "style":"realistic-bust", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveBust.gif"},
-    {"id":"SusanBust", "style":"realistic-bust", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanBust.gif"},
-    {"id":"RobertBust", "style":"realistic-bust", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertBust.gif"},
-    {"id":"AnnaBust", "style":"realistic-bust", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaBust.gif"},
-    {"id":"BenBust", "style":"realistic-bust", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenBust.gif"},
-    {"id":"AngelaBust", "style":"realistic-bust", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaBust.gif"},
-    {"id":"GeneBust", "style":"realistic-bust", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneBust.gif"},
-    {"id":"KateBust", "style":"realistic-bust", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateBust.gif"},
-    {"id":"LeeBust", "style":"realistic-bust", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeBust.gif"},
-    {"id":"LilyBust", "style":"realistic-bust", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyBust.gif"},
-
-    {"id":"CarlaBust", "style":"cgi-bust", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaBust.gif"},
-    {"id":"CarlBust", "style":"cgi-bust", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlBust.gif"},
-
-    {"id":"SteveBody", "style":"realistic-body", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveBody.gif"},
-    {"id":"SusanBody", "style":"realistic-body", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanBody.gif"},
-    {"id":"RobertBody", "style":"realistic-body", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertBody.gif"},
-    {"id":"AnnaBody", "style":"realistic-body", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaBody.gif"},
-    {"id":"BenBody", "style":"realistic-body", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenBody.gif"},
-    {"id":"AngelaBody", "style":"realistic-body", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaBody.gif"},
-    {"id":"GeneBody", "style":"realistic-body", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneBody.gif"},
-    {"id":"KateBody", "style":"realistic-body", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateBody.gif"},
-    {"id":"LeeBody", "style":"realistic-body", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeBody.gif"},
-    {"id":"LilyBody", "style":"realistic-body", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyBody.gif"},
-
-    {"id":"CarlaBody", "style":"cgi-body", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaBody.gif"},
-    {"id":"CarlBody", "style":"cgi-body", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlBody.gif"},
-    
-    {"id":"TomBody", "style":"illustrated-body", "name":"Tom", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/TomBody.gif"},
-    {"id":"TashaBody", "style":"illustrated-body", "name":"Tasha", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/TashaBody.gif"},
-    {"id":"RickBody", "style":"illustrated-body", "name":"Rick", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"2.2", "thumb":"img/characters/RickBody.gif"},
-    {"id":"JimBody", "style":"illustrated-body", "name":"Jim", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/JimBody.gif"},
-    {"id":"MeganBody", "style":"illustrated-body", "name":"Megan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MeganBody.gif"},
-
-    {"id":"CSDoug", "style":"cs", "name":"Doug", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSDoug.gif"},
-    {"id":"CSDenise", "style":"cs", "name":"Denise", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSDenise.gif"},
-    {"id":"CSPhil", "style":"cs", "name":"Phil", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSPhil.gif"},
-    {"id":"CSSophia", "style":"cs", "name":"Sophia", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSSophia.gif"},
-    {"id":"CSEmikoFront", "style":"cs", "name":"Emiko", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSEmikoFront.gif"},
-    {"id":"CSRichardFront", "style":"cs", "name":"Richard", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSRichardFront.gif"},
-    {"id":"CSVeronicaFront", "style":"cs", "name":"Veronica", "gender":"female", "defaultVoice":"Salli", "version":"1.0", "thumb":"img/characters/CSVeronicaFront.gif"},
-    {"id":"CSWyattFront", "style":"cs", "name":"Wyatt", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSWyattFront.gif"},
-    {"id":"CSSantaFront", "style":"cs", "name":"Santa", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSSantaFront.gif"},
-    {"id":"CSFelixFoxFront", "style":"cs", "name":"Felix Fox", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSFelixFoxFront.gif"},
-    {"id":"CSAngela", "style":"cs", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSAngela.gif"},
-    {"id":"CSMaleek", "style":"cs", "name":"Maleek", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSMaleek.gif"},
-    {"id":"CSDonaldTrump", "style":"cs", "name":"Donald Trump", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSDonaldTrump.gif"},
-
-    {"id":"Brad", "style":"classic", "name":"Brad", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/Brad.gif"},
-    {"id":"Kim", "style":"classic", "name":"Kim", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/Kim.gif"},
-    {"id":"Charlie", "style":"classic", "name":"Charlie", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Charlie.gif"},
-    {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
-    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
-    
-    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead2x", "style":"hd-head-2x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead3x", "style":"hd-head-3x", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-];
+// Catalog lookup 
 
 function characterStyleObject(id) {
-    for (var i = 0; i < characterStyles.length ; i++)
-        if (characterStyles[i].id == id)
-            return characterStyles[i];
+    for (var i = 0; i < catalog.characterStyles.length ; i++)
+        if (catalog.characterStyles[i].id == id)
+            return catalog.characterStyles[i];
     return null;
 }
     
 function characterObject(id) {
-    for (var i = 0; i < characters.length ; i++)
-        if (characters[i].id == id)
-            return characters[i];
+    for (var i = 0; i < catalog.characters.length ; i++)
+        if (catalog.characters[i].id == id)
+            return catalog.characters[i];
     return null;
 }
 
+function actionCategoryObject(id) {
+    for (var i = 0; i < catalog.actionCategories.length ; i++)
+        if (catalog.actionCategories[i].id == id)
+            return catalog.actionCategories[i];
+    return null;
+}
+
+function getActionTemplateFromTag(tag, character) {
+    var style = characterObject(character).style;
+    for (var i = 0; i < catalog.actions.length; i++) {
+        if (catalog.actions[i].id == tag) {
+            var category = actionCategoryObject(catalog.actions[i].category);
+            if (!category || !category.characterStyles || category.characterStyles.indexOf(style) != -1)  // Because characters that don't support a certain action should ignore that action
+                return catalog.actions[i].xml;
+        }
+    }
+    return "";
+}
+
+// Seeded random
+
+var seed = 1;
+
+function setRandomSeed(say) {
+    say = say||"";
+    // Seed our random with the say text
+    seed = 1;
+    for (var i = 0; i < say.length; i++)
+        seed += 13 * say.charCodeAt(i);
+}
+    
+function seededRandom() {
+    var x = Math.sin(seed++) * 10000;
+    return x - Math.floor(x);
+}
+
+function getActionFromActionTemplate(action, say, audiotag, bob, character) {
+    var style = characterObject(character).style;
+    var hd = style.split("-")[0] == "hd";
+    if (say || audiotag) {
+        say = say||"";
+        say = say.replace(/&/g, "&amp;");
+        say = say.replace(/</g, "&lt;");
+        say = say.replace(/>/g, "&gt;"); 
+        say = say.replace(/'/g, "&apos;");
+        //console.log("seed="+seed+" bob="+bob);
+        // action: "<lookleft/><gestureleft/><cmd type='apogee'>+{max:5}+<lookuser/><handsbyside/>+{max:0,user:1}"
+        var a = action ? action.split("+") : ["{max:0,user:1}"];  // latter is the default Look At User (user=1 means character is looking at the user)
+        // e.g. a = ["{max:0,user:1}"]
+        //      a = ["<lookleft/><gestureleft/><cmd type='apogee'>", "{max:5}", "<lookuser/><handsbyside/>", "{max:0,user:1}"]
+        var b = splitSay(say); // e.g. ["this", "is", "a", "test"]
+        var j = 0; // index into b
+        var wordsSinceBlink = 0;
+        var s = "";
+        for (var i = 0; i < a.length; i++) {
+            if (a[i].substr(0,1) != '{') {
+                s += a[i]; // regular action commands
+            }
+            else {
+                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"')); // quick parse
+                if (rec.silence) {
+                    s += '[silence ' + rec.silence + 'ms]';
+                    continue;
+                }                    
+                var c = rec.max;
+                // Case where there were no (or few) words - i.e. user used an audio file but neglected to give us a script, or an unusually short script - insert a pause
+                if (c > 0 && b.length <= 3)
+                    s += "<pause/>";
+                if (hd) {
+                    if (rec.user)
+                        s += '<fill name="speak1"/> ';
+                    // peel off up to max words (or all the words)
+                    while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
+                        s += b[j];  // add next word
+                        if (j < b.length - 1) { // if this is not the last word, add a space
+                            s += " ";
+                        }
+                        j++;
+                        c--;
+                    }
+                }
+                else {
+                    // peel off up to max words (or all the words)
+                    while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
+                        s += b[j];  // add next word
+                        if (j < b.length - 1) { // if this is not the last word, add a space OR a command
+                            if (!rec.user)
+                                s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
+                            else {
+                                if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
+                                    s += randomHead();
+                                }
+                                else if (wordsSinceBlink > 10) {
+                                    s += " <blink/> ";
+                                    wordsSinceBlink = 0;
+                                }
+                                else s += " ";
+                            }
+                        }
+                        wordsSinceBlink++;
+                        j++;
+                        c--;
+                    }
+                }
+            }
+        }
+        action = "<say>" + s + "</say>";
+    }
+    else {
+        // Case where user has no script or audio tag - just an action - now we need to interpret our tags a bit differently
+        var a = action ? action.split("+") : [];
+        var s = "";
+        for (var i = 0; i < a.length; i++) {
+            if (a[i].substr(0,1) != '{') {
+                s += a[i]; // regular action commands
+            }
+            else {
+                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"'));
+                if (rec.max) s += "<pause/>"; // this is what we had before our switch to +{}+ commands
+            }
+        }
+        action = s;
+    }
+    return action;
+}
+
+function splitSay(say) {
+    // like say.split(" ") but [] count as one word
+    var a = [];
+    var p1 = say.indexOf("[");
+    while (p1 != -1) {
+        var p2 = say.indexOf("]", p1);
+        a = a.concat(say.substr(0, p1).split(" "));
+        a.push(say.substr(p1, p2-p1+1));
+        say = say.substr(p2+1);
+        p1 = say.indexOf("[");
+    }
+    a = a.concat(say.split(" "));
+    return a;
+}
+
+function randomHead() {
+    var n = (1+Math.floor(seededRandom()*4));
+    if (n == 3) return " <headnormal/> "
+    else return " <headrandom"+n+"/> ";
+}
 
 app.listen(3000, function() {
   console.log('Listening on port 3000');

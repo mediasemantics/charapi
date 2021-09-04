@@ -63,6 +63,8 @@ function CharApiClient(divid, params) {
     var idleType = "normal";
     var bobType = "normal";
     var saveState = false;
+    var clientScale = 1;
+    var idleData = null;
 
     function resetOuterVars() {
         fade = true;
@@ -72,6 +74,8 @@ function CharApiClient(divid, params) {
         idleType = "normal";
         bobType = "normal";
         saveState = false;
+        clientScale = 1;
+        idleData = null;
     }
 
     function start() {
@@ -85,14 +89,15 @@ function CharApiClient(divid, params) {
                 playShield = true;
         }
 
+        // These are parameters known to the client
         if (typeof params.preload === "boolean") preload = params.preload;
         if (typeof params.fade === "boolean") fade = params.fade;
         if (typeof params.playShield === "boolean") playShield = params.playShield; // effectively forces autoplay
         if (typeof params.idleType === "string") idleType = params.idleType; // "none"/"blink"/"normal"
-        if (typeof params.bobType === "string") bobType = params.bobType; // "none"/"always"/"normal"
+        if (typeof params.bobType === "string") bobType = params.bobType; // "none"/"normal"
         if (typeof params.saveState === "boolean") saveState = params.saveState; // initial state of 2nd dynamicPlay is the final state of the previous one
-
-        if (bobType == "always") bob = true;
+        if (typeof params.idleData === "object") idleData = params.idleData; // get this from the catalog - tells us how to idle this character
+        if (typeof params.clientScale === "number") clientScale = params.clientScale; // use this to tell the client to further scale the server image by the given factor. Use with raster characters.
 
         setupScene();
         if (playShield) setupPlayShield(params.width, params.height);
@@ -103,11 +108,10 @@ function CharApiClient(divid, params) {
         var div = document.getElementById(divid);
         var cx = params.width;
         var cy = params.height;
-        var scale = !isVector() ? ((params.characterScale||100)/100).toFixed(2) : 1;
         var cxMax = cx;
         var cyMax = cy;
-        var cxMax2 = cxMax * scale;
-        var cyMax2 = cyMax * scale;
+        var cxMax2 = cxMax * clientScale;
+        var cyMax2 = cyMax * clientScale;
         var s = '';
         s += '<div id="' + divid + '-top' + '" style="visibility:hidden; width:' + cx + 'px; height:' + cy + 'px; position:relative; overflow: hidden;">';
         s += '  <canvas id="' + divid + '-canvas" width="' + cxMax + '" height="' + cyMax + '" style="position:absolute; top:0px; left:0px; width:' + cxMax2 + 'px; height:' + cyMax2 + 'px; "></canvas>';
@@ -240,7 +244,7 @@ function CharApiClient(divid, params) {
         var url = params.endpoint;
         // Additional parameters from the caller, e.g. character
         for (var key in params) {
-            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "bobType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState") // minus the parameters for charapiclient
+            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "bobType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState" && key != "idleData" && key != "clientScale") // minus the parameters for charapiclient
                 url += (url.indexOf("?") == -1 ? "?" : "&") + key + "=" + encodeURIComponent(params[key]);
         }
         // Additional params added by charapiclient.js, e.g. texture, with
@@ -285,8 +289,6 @@ function CharApiClient(divid, params) {
     var timeSinceLastIdleCheck;
     var timeSinceLastAction;            // Time since any action, reset on end of a message - drives idle priority
     var timeSinceLastBlink;             // Similar but only for blink
-    var randomRightLoaded = false;      // Drive bob
-    var bob = false;                    // True if both head bob tracks are loaded by idle - tells the server to include it in messages
     var lastIdle = "";                  // Avoid repeating an idle, etc.
     var idleCache = {};                 // Even though idle resources are typically in browser cache, we prefer to keep them in memory, as they are needed repeatedly    
 
@@ -332,8 +334,6 @@ function CharApiClient(divid, params) {
         timeSinceLastIdleCheck = 0;
         timeSinceLastAction = undefined;
         timeSinceLastBlink = undefined;
-        randomRightLoaded = false;
-        bob = false;
         lastIdle = "";
 
         timeSinceLastAudioStopped = 0;
@@ -362,19 +362,10 @@ function CharApiClient(divid, params) {
         var addedParams = "";
 
         secondaryTextures = {};
-        if (tag && !say && tag.substr(0,1) == '<') { // undocumented way to inject low-level actions - used by tester
-            if (saveState) addedParams += "&initialstate=" + initialState;
-            addedParams = addedParams + '&action=' + encodeURIComponent(tag);
-            addedParams = addedParams + '&with=all';
-        }
-        else if (tag || say) {
-            setRandomSeed(say);
-            if (saveState) addedParams += "&initialstate=" + initialState;
-            var actionTemplate = getActionTemplateFromTag(tag, params.character);
-            var action = getActionFromActionTemplate(actionTemplate, say, audio, bob, params.character);
-            addedParams = addedParams + '&action=' + encodeURIComponent(action);
-            addedParams = addedParams + '&with=all';
-        }
+        if (saveState) addedParams += "&initialstate=" + initialState;
+        addedParams = addedParams + '&tag=' + tag;
+        addedParams = addedParams + '&say=' + encodeURIComponent(say);
+        if (bobType == "none") addedParams = addedParams + '&bob=false';
 
         if (say && audio && lipsync)
             speakRecorded(addedParams, audio, lipsync);
@@ -523,11 +514,6 @@ function CharApiClient(divid, params) {
             secondaryTextures[key].crossOrigin = "Anonymous";
             secondaryTextures[key].onload = function () {
                 
-                // keep special track of this texture when it is loaded
-                if (key.indexOf("RandomRight") != -1)
-                    randomRightLoaded = true;
-                if (randomRightLoaded && bobType != "none")
-                    bob = true;
                 // populate idle cache
                 if (addedParams.indexOf("&idle=") != -1 || key.indexOf("RandomRight") != -1)
                     idleCache[textureURL] = secondaryTextures[key];
@@ -543,11 +529,9 @@ function CharApiClient(divid, params) {
     // just fire and forget at any time, as if you were running execute
     function preloadExecute(tag, say, audio, lipsync) {
         var addedParams = "";
-        setRandomSeed(say);
         if (saveState) addedParams += "&initialstate=" + initialState;
-        var actionTemplate = getActionTemplateFromTag(tag, params.character);
-        var action = getActionFromActionTemplate(actionTemplate, say, audio, bob, params.character);
-        addedParams = addedParams + '&action=' + encodeURIComponent(action);
+        addedParams = addedParams + '&tag=' + encodeURIComponent(tag);
+        addedParams = addedParams + '&say=' + encodeURIComponent(say);
         addedParams = addedParams + '&with=all';
         if (say && audio && lipsync) {
             addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
@@ -636,8 +620,6 @@ function CharApiClient(divid, params) {
         // simple strategy - when there is stuff to preload, slip one in every second or so - rarely does it lock up load channels for actual loads
         if (!preloadTimeout && preload)
             preloadTimeout = setTimeout(preloadSomeMore, 500);
-        // bob normally withheld for initial segment only
-        if (!bob && bobType == "normal" && supportsBob() && startAudio) bob = true;
     }
 
     function animate(timestamp) {
@@ -946,32 +928,27 @@ function CharApiClient(divid, params) {
         m[1] = b * m[0] + d * m[1];     m[3] = b * m[2] + d * m[3];     m[5] = b * m[4] + d * m[5] + f;
     }
     
-    function isVector() {
-        var style = characterObject(params.character).style;
-        return style.split("-")[0] == "illustrated" || style == "cs" || style == "classic";
-    }
-
-    function getIdlesFromStyle(style) {
-        var styleMajor = style.split("-")[0];
-        if (styleMajor == "realistic" || styleMajor == "cgi" /*|| styleMajor == "illustrated"*/ || styleMajor == "hd") {
+    function getIdles() {
+        if (idleType == "none") 
+            return [];
+        else if (idleData) {
             var a = [];
-            for (var i = 1; i <= 3; i++)
-                a.push("headidle"+i);
-            var styleMinor = style.split("-")[1];
-            if (styleMinor == "body" || styleMinor == "bust") {
-                for (i = 1; i <= 3; i++)
-                    a.push("bodyidle1");
+            for (let s of idleData[idleType]) {
+                var m = s.match(/([a-z]+)([0-9]+)-([0-9]+)/);
+                if (m) {
+                    for (var i = parseInt(m[2]); i <= parseInt(m[3]); i++)
+                        a.push(m[1] + i);
+                }
+                else {
+                    a.push(s);
+                }
             }
             return a;
         }
-        else return []; // never include blink
-    }
-
-    function supportsBob() {
-        // used in standalone to force the issue
-        var style = characterObject(params.character).style;
-        var styleMajor = style.split("-")[0];
-        return (styleMajor == "realistic" || styleMajor == "cgi" || styleMajor == "hd");
+        else {
+            console.log("missing idleData");
+            return [];
+        }
     }
 
     //
@@ -993,22 +970,21 @@ function CharApiClient(divid, params) {
         if (loaded && !loading && !animating && !playShield && !atLeastOneLoadError) {
             if (timeSinceLastAction > 1500 + Math.random() * 3500) {  // no more than 5 seconds with no action whatsoever
                 timeSinceLastAction = 0;
-                var style = characterObject(params.character).style;
-                var hd = style.split("-")[0] == "hd";
-                // There will be action - will it be a blink? Blinks must occur at a certain frequency. But hd characters incorporate blink into idle actions.
-                if (idleType != "none" && timeSinceLastBlink > 5000 + Math.random() * 5000 && !hd) {
+                var idles = getIdles();
+                var hasBlinkIdle = idles.length > 0 && idles[0] == "blink"; // if blink is the first idle then it is expected to be randomly interleaved with the other idles on it's own schedule
+                // There WILL be an action - will it be a blink? Blinks must occur at a certain frequency. But hd characters incorporate blink into idle actions.
+                if (hasBlinkIdle && timeSinceLastBlink > 5000 + Math.random() * 5000) {
                     timeSinceLastBlink = 0;
                     execute("blink", "", null, null, true, onIdleComplete.bind(null));
                 }
                 // Or another idle routine?
-                else if (idleType == "normal") {
-                    var idles = getIdlesFromStyle(style);
-                    var headidle = (idles.indexOf("headidle1") != -1);
+                else {
+                    if (hasBlinkIdle) idles.shift();
                     var idle = null;
-                    // pick an idle that does not repeat - favor a headidle1 at first
+                    // pick an idle that does not repeat - favor the first idle listed first - give us a chance to start with something quick/important to fetch
                     if (idles.length > 0) {
                         if (!lastIdle) { 
-                            idle = "headidle1";
+                            idle = idles[0];
                         }
                         else {
                             for (var guard = 10; guard > 0; guard--) {
@@ -1168,383 +1144,6 @@ function CharApiClient(divid, params) {
             event.initEvent(s, true, true);
             return event;
         }
-    }
-
-    var characterStyles = [
-    {"id":"realistic-head", "name":"Realistic Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"realistic-bust", "name":"Realistic Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
-    {"id":"realistic-body", "name":"Realistic Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0},
-    {"id":"hd-head", "name":"High Definition", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"hd-head-2x", "name":"High Definition", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":500, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"hd-head-3x", "name":"High Definition", "naturalWidth":750, "naturalHeight":600, "recommendedWidth":750, "recommendedHeight":600, "recommendedX":0, "recommendedY":0},
-    {"id":"illustrated-head", "name":"Illustrated Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"illustrated-body", "name":"Illustrated Body", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"cs", "name":"Cartoon Solutions", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"classic", "name":"Classic Cartoon", "naturalWidth": 307, "naturalHeight": 397, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":0, "recommendedY":0},
-    {"id":"cgi-head", "name":"CG Cartoon Head", "naturalWidth":250, "naturalHeight":200, "recommendedWidth":250, "recommendedHeight":200, "recommendedX":0, "recommendedY":0},
-    {"id":"cgi-bust", "name":"CG Cartoon Bust", "naturalWidth":375, "naturalHeight":300, "recommendedWidth":275, "recommendedHeight":300, "recommendedX":-50, "recommendedY":0},
-    {"id":"cgi-body", "name":"CG Cartoon Body", "naturalWidth":500, "naturalHeight":400, "recommendedWidth":300, "recommendedHeight":400, "recommendedX":-100, "recommendedY":0}
-    ];
-
-    var characters = [
-    {"id":"SteveHead", "style":"realistic-head", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveHead.gif"},
-    {"id":"SusanHead", "style":"realistic-head", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanHead.gif"},
-    {"id":"RobertHead", "style":"realistic-head", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertHead.gif"},
-    {"id":"AnnaHead", "style":"realistic-head", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaHead.gif"},
-    {"id":"BenHead", "style":"realistic-head", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenHead.gif"},
-    {"id":"AngelaHead", "style":"realistic-head", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaHead.gif"},
-    {"id":"GeneHead", "style":"realistic-head", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneHead.gif"},
-    {"id":"KateHead", "style":"realistic-head", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateHead.gif"},
-    {"id":"LeeHead", "style":"realistic-head", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeHead.gif"},
-    {"id":"LilyHead", "style":"realistic-head", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyHead.gif"},
-
-    {"id":"CarlaHead", "style":"cgi-head", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaHead.gif"},
-    {"id":"CarlHead", "style":"cgi-head", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlHead.gif"},
-
-    {"id":"TomHead", "style":"illustrated-head", "format":"head", "name":"Tom", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/TomHead.gif"},
-    {"id":"TashaHead", "style":"illustrated-head", "format":"head", "name":"Tasha", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/TashaHead.gif"},
-    {"id":"RickHead", "style":"illustrated-head", "format":"head", "name":"Rick", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"2.2", "thumb":"img/characters/RickHead.gif"},
-    {"id":"JimHead", "style":"illustrated-head", "format":"head", "name":"Jim", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/JimHead.gif"},
-    {"id":"MeganHead", "style":"illustrated-head", "format":"head", "name":"Megan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MeganHead.gif"},
-    {"id":"KarmaJon", "style":"illustrated-head", "format":"head", "name":"Jon", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Custom.gif", "tag":"karma"},
-
-    {"id":"SteveBust", "style":"realistic-bust", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveBust.gif"},
-    {"id":"SusanBust", "style":"realistic-bust", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanBust.gif"},
-    {"id":"RobertBust", "style":"realistic-bust", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertBust.gif"},
-    {"id":"AnnaBust", "style":"realistic-bust", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaBust.gif"},
-    {"id":"BenBust", "style":"realistic-bust", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenBust.gif"},
-    {"id":"AngelaBust", "style":"realistic-bust", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaBust.gif"},
-    {"id":"GeneBust", "style":"realistic-bust", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneBust.gif"},
-    {"id":"KateBust", "style":"realistic-bust", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateBust.gif"},
-    {"id":"LeeBust", "style":"realistic-bust", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeBust.gif"},
-    {"id":"LilyBust", "style":"realistic-bust", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyBust.gif"},
-
-    {"id":"CarlaBust", "style":"cgi-bust", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaBust.gif"},
-    {"id":"CarlBust", "style":"cgi-bust", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlBust.gif"},
-
-    {"id":"SteveBody", "style":"realistic-body", "name":"Steve", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/SteveBody.gif"},
-    {"id":"SusanBody", "style":"realistic-body", "name":"Susan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/SusanBody.gif"},
-    {"id":"RobertBody", "style":"realistic-body", "name":"Robert", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/RobertBody.gif"},
-    {"id":"AnnaBody", "style":"realistic-body", "name":"Anna", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/AnnaBody.gif"},
-    {"id":"BenBody", "style":"realistic-body", "name":"Ben", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/BenBody.gif"},
-    {"id":"AngelaBody", "style":"realistic-body", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.5", "thumb":"img/characters/AngelaBody.gif"},
-    {"id":"GeneBody", "style":"realistic-body", "name":"Gene", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/GeneBody.gif"},
-    {"id":"KateBody", "style":"realistic-body", "name":"Kate", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/KateBody.gif"},
-    {"id":"LeeBody", "style":"realistic-body", "name":"Lee", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"3.0", "thumb":"img/characters/LeeBody.gif"},
-    {"id":"LilyBody", "style":"realistic-body", "name":"Lily", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"3.0", "thumb":"img/characters/LilyBody.gif"},
-
-    {"id":"CarlaBody", "style":"cgi-body", "name":"Carla", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.1", "thumb":"img/characters/CarlaBody.gif"},
-    {"id":"CarlBody", "style":"cgi-body", "name":"Carl", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.1", "thumb":"img/characters/CarlBody.gif"},
-
-    {"id":"TomBody", "style":"illustrated-body", "name":"Tom", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/TomBody.gif"},
-    {"id":"TashaBody", "style":"illustrated-body", "name":"Tasha", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/TashaBody.gif"},
-    {"id":"RickBody", "style":"illustrated-body", "name":"Rick", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"2.2", "thumb":"img/characters/RickBody.gif"},
-    {"id":"JimBody", "style":"illustrated-body", "name":"Jim", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/JimBody.gif"},
-    {"id":"MeganBody", "style":"illustrated-body", "name":"Megan", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MeganBody.gif"},
-
-    {"id":"CSDoug", "style":"cs", "name":"Doug", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSDoug.gif"},
-    {"id":"CSDenise", "style":"cs", "name":"Denise", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSDenise.gif"},
-    {"id":"CSPhil", "style":"cs", "name":"Phil", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSPhil.gif"},
-    {"id":"CSSophia", "style":"cs", "name":"Sophia", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSSophia.gif"},
-    {"id":"CSEmikoFront", "style":"cs", "name":"Emiko", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSEmikoFront.gif"},
-    {"id":"CSRichardFront", "style":"cs", "name":"Richard", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSRichardFront.gif"},
-    {"id":"CSVeronicaFront", "style":"cs", "name":"Veronica", "gender":"female", "defaultVoice":"Salli", "version":"1.0", "thumb":"img/characters/CSVeronicaFront.gif"},
-    {"id":"CSWyattFront", "style":"cs", "name":"Wyatt", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSWyattFront.gif"},
-    {"id":"CSSantaFront", "style":"cs", "name":"Santa", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSSantaFront.gif"},
-    {"id":"CSFelixFoxFront", "style":"cs", "name":"Felix Fox", "gender":"male", "defaultVoice":"Joey", "version":"1.0", "thumb":"img/characters/CSFelixFoxFront.gif"},
-    {"id":"CSAngela", "style":"cs", "name":"Angela", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.0", "thumb":"img/characters/CSAngela.gif"},
-    {"id":"CSMaleek", "style":"cs", "name":"Maleek", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSMaleek.gif"},
-    {"id":"CSDonaldTrump", "style":"cs", "name":"Donald Trump", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/CSDonaldTrump.gif"},
-
-    {"id":"Brad", "style":"classic", "name":"Brad", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.2", "thumb":"img/characters/Brad.gif"},
-    {"id":"Kim", "style":"classic", "name":"Kim", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/Kim.gif"},
-    {"id":"Charlie", "style":"classic", "name":"Charlie", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Charlie.gif"},
-    {"id":"Al", "style":"classic", "name":"Al", "gender":"male", "defaultVoice":"NeuralMatthew", "version":"1.0", "thumb":"img/characters/Al.gif"},
-    {"id":"Wolly", "style":"classic", "name":"Wolly", "gender":"male", "defaultVoice":"Joey", "version":"2.4", "thumb":"img/characters/Wolly.gif"},
-    
-    {"id":"MichelleHead", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead2x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-    {"id":"MichelleHead3x", "style":"hd-head", "name":"Michelle", "gender":"female", "defaultVoice":"NeuralJoanna", "version":"1.2", "thumb":"img/characters/MichelleHead.gif"},
-    ]
-
-    function characterObject(id) {
-        for (var i = 0; i < characters.length ; i++)
-            if (characters[i].id == id)
-                return characters[i];
-        return null;
-    }
-
-    function characterStyleObject(id) {
-        for (var i = 0; i < characterStyles.length ; i++)
-            if (characterStyles[i].id == id)
-                return characterStyles[i];
-        return null;
-    }
-
-    // This class supports a simplified model in which each Play can be associated with a specific action. The result is less flexible, but easier to work with.
-    // This is the same model supported by the Character Builder Agent and Chatbot modules.
-
-    var actions = [
-        {"id":"look-up-right", "category":"look", "name":"Look Up Right", "xml":"<lookupleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-right", "category":"look", "name":"Look Right", "xml":"<lookleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-down-right", "category":"look", "name":"Look Down Right", "xml":"<lookdownleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-up", "category":"look", "name":"Look Up", "xml":"<lookup/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-down", "category":"look", "name":"Look Down", "xml":"<lookdown/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-up-left", "category":"look", "name":"Look Up Left", "xml":"<lookupright/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-left", "category":"look", "name":"Look Left", "xml":"<lookright/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-down-left", "category":"look", "name":"Look Down Left", "xml":"<lookdownright/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-
-        {"id":"look-right", "category":"look-limited", "name":"Look Right", "xml":"<lookleft/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-up", "category":"look-limited", "name":"Look Up", "xml":"<lookup/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-down", "category":"look-limited", "name":"Look Down", "xml":"<lookdown/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"look-left", "category":"look-limited", "name":"Look Left", "xml":"<lookright/><cmd type='apogee'/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-
-        {"id":"gesture-right",   "category":"gesture", "name":"Gesture Right",      "xml":"<lookleft/><gestureleft/><cmd type='apogee'>+{max:10}+<lookuser/><handsbyside/>+{max:0,user:1}+{max:0,user:1}"},
-        {"id":"gesture-left",      "category":"gesture", "name":"Gesture Left",     "xml":"<lookright/><gestureright/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-
-        {"id":"point-up-right",   "category":"point", "name":"Point Up Right",      "xml":"<halfleft/><lookupleft/><pointupleft/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-        {"id":"point-right",      "category":"point", "name":"Point Right",         "xml":"<halfleft/><lookleft/><pointleft/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-        {"id":"point-down-right", "category":"point", "name":"Point Down Right",    "xml":"<halfleft/><lookdownleft/><pointdownleft/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-        {"id":"point-up-left",    "category":"point", "name":"Point Up Left",       "xml":"<halfright/><lookupright/><pointupright/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-        {"id":"point-left",       "category":"point", "name":"Point Left",          "xml":"<halfright/><lookright/><pointright/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-        {"id":"point-down-left",  "category":"point", "name":"Point Down Left",     "xml":"<halfright/><lookdownright/><pointdownright/><cmd type='apogee'/>+{max:10}+<lookuser/><handsbyside/><front/>+{max:0,user:1}"},
-
-        {"id":"point-up-right",   "category":"point-cs", "name":"Point Up Right",   "xml":"<pointupleft/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"point-right",      "category":"point-cs", "name":"Point Right",      "xml":"<pointleft/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"point-down-right", "category":"point-cs", "name":"Point Down Right", "xml":"<pointdownleft/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"point-up-left",    "category":"point-cs", "name":"Point Up Left",    "xml":"<pointupright/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"point-left",       "category":"point-cs", "name":"Point Left",       "xml":"<pointright/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"point-down-left",  "category":"point-cs", "name":"Point Down Left",  "xml":"<pointdownright/><cmd type='apogee'/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-
-        {"id":"eyes-wide", "category":"eyes", "name":"Eyes Wide", "xml":"<eyeswide/>+{max:10}+<eyesnormal/>+{max:0,user:1}"},
-        {"id":"eyes-narrow", "category":"eyes", "name":"Eyes Narrow", "xml":"<eyesnarrow/>+{max:10}+<eyesnormal/>+{max:0,user:1}"},
-
-        {"id":"head-nod", "category":"head", "name":"Head Nod", "xml":"<eyeswide/><headnod/><eyesnormal/>+{max:0,user:1}"},
-        {"id":"head-shake", "category":"head", "name":"Head Shake", "xml":"<eyesnarrow/><headshake/><eyesnormal/>+{max:0,user:1}"},
-        {"id":"head-right", "category":"head", "name":"Head Right", "xml":"<eyeswide/><headleft/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-        {"id":"head-left", "category":"head", "name":"Head Left", "xml":"<eyeswide/><headright/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-        {"id":"head-down", "category":"head", "name":"Head Down", "xml":"<eyeswide/><headdown/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-        {"id":"head-up", "category":"head", "name":"Head Up", "xml":"<eyeswide/><headup/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-        {"id":"head-down-right", "category":"head", "name":"Head Down Right", "xml":"<eyeswide/><headtiltleft/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-        {"id":"head-down-left", "category":"head", "name":"Head Down Left", "xml":"<eyeswide/><headtiltright/>+{max:10}+<eyesnormal/><headnormal/>+{max:0,user:1}"},
-
-        {"id":"head-nod", "category":"head-hd", "name":"Head Nod", "xml":"<head3 enter=\"eyeswide\"/><head4 preserve=\"eyeswide\"/><head3 preserve=\"eyeswide\"/><head0 exit=\"eyeswide\"/>+{max:0,user:1}"},
-        {"id":"head-shake", "category":"head-hd", "name":"Head Shake", "xml":"<head1 enter=\"eyesnarrow\"/><head2 preserve=\"eyesnarrow\"/><head1 preserve=\"eyesnarrow\"/><head0 exit=\"eyesnarrow\"/>+{max:0,user:1}"},
-
-        {"id":"surprise", "category":"emotive", "name":"Surprise", "xml":"<surprise/>+{max:0,user:1}"},
-        {"id":"angry", "category":"emotive", "name":"Angry", "xml":"<handsinback/><angry/><handsbyside/>+{max:0,user:1}"},
-        {"id":"confused", "category":"emotive", "name":"Confused", "xml":"<handup/><confused/><handsbyside/>+{max:0,user:1}"},
-        {"id":"frustrated", "category":"emotive", "name":"Frustrated", "xml":"<handsup/><lookup/>+{max:10}+<lookuser/><handsbyside/>+{max:0,user:1}"},
-        {"id":"happy", "category":"emotive", "name":"Happy", "xml":"+{max:10}+<bigsmile/>+{max:0,user:1}"},
-        {"id":"sad", "category":"emotive", "name":"Sad", "xml":"<handsinback/><sad/><handsbyside/>+{max:0,user:1}"},
-        {"id":"wink", "category":"emotive", "name":"Wink", "xml":"+{max:10}+<wink/>+{max:0,user:1}"},
-
-        {"id":"surprise", "category":"emotive-head", "name":"Surprise", "xml":"<surprise/>+{max:0,user:1}"},
-        {"id":"angry", "category":"emotive-head", "name":"Angry", "xml":"<angry/>+{max:0,user:1}"},
-        {"id":"confused", "category":"emotive-head", "name":"Confused", "xml":"<confused/>+{max:0,user:1}"},
-        {"id":"frustrated", "category":"emotive-head", "name":"Frustrated", "xml":"<lookup/>+{max:10}+<lookuser/>+{max:0,user:1}"},
-        {"id":"happy", "category":"emotive-head", "name":"Happy", "xml":"<bigsmile/>+{max:0,user:1}"},
-        {"id":"sad", "category":"emotive-head", "name":"Sad", "xml":"<sad/>+{max:0,user:1}"},
-        {"id":"wink", "category":"emotive-head", "name":"Wink", "xml":"<wink/>+{max:0,user:1}"},
-
-        {"id":"angry", "category":"emotive-cs", "name":"Angry", "xml":"<angry/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"confused", "category":"emotive-cs", "name":"Confused", "xml":"<confused/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"frustrated", "category":"emotive-cs", "name":"Frustrated", "xml":"<frustrated/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"happy", "category":"emotive-cs", "name":"Happy", "xml":"<happy/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-
-        {"id":"hi", "category":"conversational", "name":"Hi", "xml":"<headup/><palmup/><palmwave/><lookuser/><handsbyside/>+{max:0,user:1}"},
-        {"id":"aha", "category":"conversational", "name":"Aha", "xml":"<fingerup/><headup/><eyeswide/>+{max:15}+<lookuser/><eyesnormal/><handsbyside/>+{max:0,user:1}"},
-        {"id":"stop", "category":"conversational", "name":"Stop", "xml":"<headtiltright/><eyeswide/><palmup/>+{max:15}+<eyesnormal/><lookuser/><handsbyside/>+{max:0,user:1}"},
-        {"id":"emphasize", "category":"conversational", "name":"Emphasize", "xml":"<headright/><eyeswide/><handup/>+{max:10}+<handemph/><handemph/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"to-me", "category":"conversational", "name":"To Me", "xml":"<eyeswide/><headright/><handsin/>+{max:15}+<eyesnormal/><lookuser/><handsbyside/>+{max:0,user:1}"},
-        {"id":"to-you", "category":"conversational", "name":"To You", "xml":"<eyeswide/><headtiltright/><handsup/>+{max:15}+<eyesnormal/><lookuser/><handsbyside/>+{max:0,user:1}"},
-        {"id":"quote", "category":"conversational", "name":"Quote", "xml":"<fingersup/><headup/><eyeswide/><fingersquote/><fingersquote/>+{max:15}+<lookuser/><eyesnormal/><handsbyside/>+{max:0,user:1}"},
-        {"id":"weigh", "category":"conversational", "name":"Weigh", "xml":"<headtiltright/><eyeswide/><handsup/><handsweigh/>+{max:10}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"hands-in-back", "category":"conversational", "name":"Hands In Back", "xml":"<eyeswide/><handsinback/><headup/>+{max:10}+<lookuser/><eyesnormal/>+{max:0,user:1}"},
-
-        {"id":"hi", "category":"conversational-cs", "name":"Hi", "xml":"<hi/>+{max:15}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"aha", "category":"conversational-cs", "name":"Aha", "xml":"<aha/>+{max:15}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"thumbs-up", "category":"conversational-cs", "name":"Thumbs Up", "xml":"<thumbsup/>+{max:15}+<handsbyside/>+{max:0,user:1}"},
-        {"id":"thinking", "category":"conversational-cs", "name":"Thinking", "xml":"<thinking/>+{max:15}+<handsbyside/>+{max:0,user:1}"},
-
-        {"id":"next", "category":"navigate", "name":"Next"},
-        {"id":"previous", "category":"navigate", "name":"Previous"},
-        {"id":"first-and-stop", "category":"navigate", "name":"First"},
-
-        {"id":"link", "category":"misc", "name":"Link"},
-        {"id":"code", "category":"misc", "name":"JavaScript"},
-
-        {"id":"blink", "category":"idle", "name":"Blink", "xml":"<blink/>"},
-        
-        {"id":"headidle1", "category":"idle", "name":"Head Idle 1", "xml":"<headrandom1/><pause cms=\"300\"/><headnormal/>"},
-        {"id":"headidle2", "category":"idle", "name":"Head Idle 2", "xml":"<headrandom4/><pause cms=\"300\"/><headnormal/>"},
-        {"id":"headidle3", "category":"idle", "name":"Head Idle 3", "xml":"<headrandom1/><pause cms=\"300\"/><headrandom4/><pause cms=\"300\"/><headnormal/>"},
-        {"id":"bodyidle1", "category":"idle", "name":"Body Idle 1", "xml":"<headrandom1/><swayarms/><headnormal/>"},
-        
-        {"id":"headidle1", "category":"idle-hd", "name":"Head Idle 1", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head0/>"},
-        {"id":"headidle2", "category":"idle-hd", "name":"Head Idle 2", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head11/><pause cms=\"500\"/> <head12/><head0 with=\"blink\"/><pause cms=\"500\"/> <head12/><pause/> <head10/><pause cms=\"750\"/> <head9/><head11/><head0 with=\"blink\"/>"},
-        {"id":"headidle3", "category":"idle-hd", "name":"Head Idle 3", "xml":"<head9 with=\"blink\"/><pause cms=\"500\"/> <head11/><pause cms=\"500\"/> <head12/><head0 with=\"blink\"/><pause cms=\"500\"/> <head12/><pause/> <head10/><pause cms=\"750\"/> <head9/><head11/><head0 with=\"blink\"/>"}
-    ];
-
-    var actionCategories = [
-        {"id":"look", "name":"Look", "characterStyles":["realistic-body","realistic-bust","realistic-head","illustrated-head","illustrated-body","cgi-body","cgi-bust","cgi-head","classic"]},
-        {"id":"look-limited", "name":"Look", "characterStyles":["cs"]},
-        {"id":"gesture", "name":"Gesture", "characterStyles":["realistic-body","cgi-body","illustrated-body","classic"]},
-        {"id":"point", "name":"Point", "characterStyles":["realistic-body","cgi-body","classic"]},
-        {"id":"point-cs", "name":"Point", "characterStyles":["cs"]},
-        {"id":"eyes", "name":"Eyes"},
-        {"id":"head", "name":"Head", "characterStyles":["realistic-head","realistic-body","realistic-bust","cgi-head","cgi-body","cgi-bust","classic"]},
-        {"id":"head-hd", "name":"Head", "characterStyles":["hd-head","hd-body","hd-bust"]},
-        {"id":"emotive", "name":"Emotive", "characterStyles":["realistic-body","realistic-bust","illustrated-body","cgi-body","cgi-bust","classic"]},
-        {"id":"emotive-head", "name":"Emotive", "characterStyles":["realistic-head","illustrated-head","cgi-head"]},
-        {"id":"emotive-cs", "name":"Emotive", "characterStyles":["cs"]},
-        {"id":"conversational", "name":"Conversational", "characterStyles":["realistic-body","realistic-bust","illustrated-body","cgi-body","cgi-bust","classic"]},
-        {"id":"conversational-cs", "name":"Conversational", "characterStyles":["cs"]},
-        {"id":"idle", "name":"Idle", "characterStyles":["realistic-head","realistic-body","realistic-bust","cgi-head","cgi-body","cgi-bust"]},
-        {"id":"idle-hd", "name":"Idle", "characterStyles":["hd-head","hd-body","hd-bust"]},
-    ];
-
-    function actionCategoryObject(id) {
-        for (var i = 0; i < actionCategories.length ; i++)
-            if (actionCategories[i].id == id)
-                return actionCategories[i];
-        return null;
-    }
-
-    function getActionTemplateFromTag(tag, character) {
-        var style = characterObject(character).style;
-        for (var i = 0; i < actions.length; i++) {
-            if (actions[i].id == tag) {
-                var category = actionCategoryObject(actions[i].category);
-                if (!category || !category.characterStyles || category.characterStyles.indexOf(style) != -1)  // Because characters that don't support a certain action should ignore that action
-                    return actions[i].xml;
-            }
-        }
-        return "";
-    }
-
-    // Seeded random
-
-    var seed = 1;
-
-    function setRandomSeed(say) {
-        say = say||"";
-        // Seed our random with the say text
-        seed = 1;
-        for (var i = 0; i < say.length; i++)
-            seed += 13 * say.charCodeAt(i);
-    }
-
-    function seededRandom() {
-        var x = Math.sin(seed++) * 10000;
-        return x - Math.floor(x);
-    }
-
-    function getActionFromActionTemplate(action, say, audiotag, bob, character) {
-        var style = characterObject(character).style;
-        var hd = style.split("-")[0] == "hd";
-        if (say || audiotag) {
-            say = say||"";
-            //console.log("seed="+seed+" bob="+bob);
-            // action: "<lookleft/><gestureleft/><cmd type='apogee'>+{max:5}+<lookuser/><handsbyside/>+{max:0,user:1}"
-            var a = action ? action.split("+") : ["{max:0,user:1}"];  // latter is the default Look At User (user=1 means character is looking at the user)
-            // e.g. a = ["{max:0,user:1}"]
-            //      a = ["<lookleft/><gestureleft/><cmd type='apogee'>", "{max:5}", "<lookuser/><handsbyside/>", "{max:0,user:1}"]
-            var b = splitSay(say); // e.g. ["this", "is", "a", "test"]
-            var j = 0; // index into b
-            var wordsSinceBlink = 0;
-            var s = "";
-            for (var i = 0; i < a.length; i++) {
-                if (a[i].substr(0,1) != '{') {
-                    s += a[i]; // regular action commands
-                }
-                else {
-                    var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"')); // quick parse
-                    if (rec.silence) {
-                        s += '[silence ' + rec.silence + 'ms]';
-                        continue;
-                    }                    
-                    var c = rec.max;
-                    // Case where there were no (or few) words - i.e. user used an audio file but neglected to give us a script, or an unusually short script - insert a pause
-                    if (c > 0 && b.length <= 3)
-                        s += "<pause/>";
-                    if (hd) {
-                        if (rec.user)
-                            s += '<fill name="speak1"/> ';
-                        // peel off up to max words (or all the words)
-                        while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
-                            s += b[j];  // add next word
-                            if (j < b.length - 1) { // if this is not the last word, add a space
-                                s += " ";
-                            }
-                            j++;
-                            c--;
-                        }
-                    }
-                    else {
-                        // peel off up to max words (or all the words)
-                        while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
-                            s += b[j];  // add next word
-                            if (j < b.length - 1) { // if this is not the last word, add a space OR a command
-                                if (!rec.user)
-                                    s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
-                                else {
-                                    if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
-                                        s += randomHead();
-                                    }
-                                    else if (wordsSinceBlink > 10) {
-                                        s += " <blink/> ";
-                                        wordsSinceBlink = 0;
-                                    }
-                                    else s += " ";
-                                }
-                            }
-                            wordsSinceBlink++;
-                            j++;
-                            c--;
-                        }
-                    }
-                }
-            }
-            action = "<say>" + s + "</say>";
-        }
-        else {
-            // Case where user has no script or audio tag - just an action - now we need to interpret our tags a bit differently
-            var a = action ? action.split("+") : [];
-            var s = "";
-            for (var i = 0; i < a.length; i++) {
-                if (a[i].substr(0,1) != '{') {
-                    s += a[i]; // regular action commands
-                }
-                else {
-                    var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"'));
-                    if (rec.max) s += "<pause/>"; // this is what we had before our switch to +{}+ commands
-                }
-            }
-            action = s;
-        }
-        return action;
-    }
-
-    function splitSay(say) {
-        // like say.split(" ") but [] count as one word
-        var a = [];
-        var p1 = say.indexOf("[");
-        while (p1 != -1) {
-            var p2 = say.indexOf("]", p1);
-            a = a.concat(say.substr(0, p1).split(" "));
-            a.push(say.substr(p1, p2-p1+1));
-            say = say.substr(p2+1);
-            p1 = say.indexOf("[");
-        }
-        a = a.concat(say.split(" "));
-        return a;
-    }
-
-    function randomHead() {
-        var n = (1+Math.floor(seededRandom()*4));
-        if (n == 3) return " <headnormal/> "
-        else return " <headrandom"+n+"/> ";
     }
 
     start();

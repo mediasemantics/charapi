@@ -13,18 +13,22 @@
 var character;
 document.addEventListener("DOMContentLoaded", function() {
     character = CharApiClient.setupDiv("myDiv", {
-        width:250,
-        height:200,
+        width: 250,
+        height: 200,
         // TODO: Replace this with your own endpoint on your own server. 
-        endpoint:"http://localhost:3000/animate",
-        // Variable parameters. If your api works without authentication, e.g. if your page is accessible without a login, then it is wise 
-        // to fix as many parameters as you can in your server code, including a background with a logo, if you can, 
+        endpoint: "http://localhost:3000/animate",
+        // Character API parameters. TODO: If your api works without authentication, e.g. if your page is accessible without a login, then it is wise 
+        // to *fix* or *limit* as many parameters as you can in your server code, including a background with a logo, if you can, 
         // in order to minimize the attractiveness of your endpoint for scammers. (CORS helps with this, but it can still be defeated.)
-        character:"SusanHead",
+        character: "SusanHead",
+        // Character version - get this from the character catalog
+        version: "3.0",
+        // Character idle pattern - get this from the character catalog
+        idleData: {"blink":["blink"],"normal":["blink","headidle1-3"]},
         // Increment the 'cache' value if you make changes to the parameters you fix in your server.
         // Even if you delete your server-side cache, your clients may have images in their client cache. Incrementing the
-        // cache number is a simple way to ensure that neither client or server-cached images are accidentally used.
-        cache:1
+        // cache number in the client is a simple way to ensure that neither client or server-cached images are accidentally used.
+        cache: 1
     });
 })
 
