@@ -45,13 +45,14 @@ app.get('/animate', function(req, res, next) {
         if (e) return next(e);
         
         var character;
+        var version;
         
-        // The client specifies the character and the version - but server is free to igore this.
+        // The client specifies the character
         if (req.query.character) character = req.query.character;
-        // The client specifies a precise version - this lets you clear all levels of cache by upgrading the client version
+        // And a precise version - this lets you upgrade to a new character and clear all levels of caching
         if (req.query.version) version = req.query.version;
         
-        // These parameters can be derived from the character if they are not supplied
+        // These parameters can technically be derived from the character if they are not supplied
         var charobj = characterObject(character);
         var charstyleobj = characterStyleObject(charobj.style);
         var width = req.query.width || charstyleobj.naturalWidth;
@@ -166,7 +167,8 @@ app.get('/animate', function(req, res, next) {
                     // Case where we need to get tts and lipsync it first
                     else
                     {
-                        doParallelTTS(o.action, voice, function(err, audioData, lipsyncData) {
+                        var textOnly = action.replace(new RegExp("<[^>]*>", "g"), "").replace("  ", " "); // e.g. <say>Look <cmd/> here.</say> --> Look here.
+                        doParallelTTS(textOnly, voice, function(err, audioData, lipsyncData) {
                             if (err) return next(new Error(err.message));
                             fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
                                 if (err) return next(new Error(err.message));
@@ -226,7 +228,7 @@ function loadCatalogIfNecessary(callback) {
     }
 }
 
-function doParallelTTS(action, voice, callback) {
+function doParallelTTS(textOnly, voice, callback) {
     var audioData;
     var lipsyncData;
     var firstErr = null;
@@ -235,7 +237,6 @@ function doParallelTTS(action, voice, callback) {
     
     // Do both TTS request in parallel to save time
     
-    var textOnly = action.replace(new RegExp("<[^>]*>", "g"), "").replace("  ", " "); // e.g. <say>Look <cmd/> here.</say> --> Look here.
     var neural = false;
     if (voice.substr(0,6) == "Neural") { // NeuralJoanna or Joanna
         neural = true;
