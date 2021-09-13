@@ -28,8 +28,8 @@ app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
 // The Character API endpoints
 
-var urlCatalog = "http://mediasemantics.com/catalog";
-var urlAnimate = "http://mediasemantics.com/animate";
+var urlCatalog = "http://api.mediasemantics.com/catalog";
+var urlAnimate = "http://api.mediasemantics.com/animate";
 
 // The animation catalog
 var catalog = null;
