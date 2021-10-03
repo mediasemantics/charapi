@@ -688,7 +688,7 @@ function CharApiClient(divid, params) {
                                     
                                     if (recipe[i][7] !== undefined) {
                                         var o = updateTransform(src, recipe, i);
-                                        var process = recipe[i].length == 13 ? recipe[i][7] : 1;
+                                        var process = recipe[i][7];
                                         ctx.drawImage(canvasTransformDst[process-1],
                                             0, 0,
                                             recipe[i][4], recipe[i][5],
@@ -810,17 +810,18 @@ function CharApiClient(divid, params) {
         var height = recipe[i][5];
         var xSrcImage = recipe[i][0];
         var ySrcImage = recipe[i][1];
-        var process = recipe[i].length == 13 ? recipe[i][7] : 1;
-        var rb = process == 1 ? animData.mouthBendRadius : (process == 2 ? animData.jawBendRadius : 0);
-        var rt = process == 1 ? animData.mouthTwistRadius : (process == 2 ? animData.jawTwistRadius : 0);
-        var compat = recipe[i].length == 13 ? 1 : 0;
-        var bend = - recipe[i][7+compat] / 180 * Math.PI;
-        var twist = recipe[i][8+compat] / 180 * Math.PI;
-        var side = recipe[i][9+compat] / 180 * Math.PI;
+        var process = recipe[i][7];
+        var rb = process == 1 ? animData.mouthBendRadius : (process == 2 || animData.jawBendRadius != undefined ? animData.jawBendRadius : 0);
+        var rt = process == 1 ? animData.mouthTwistRadius : (process == 2 || animData.jawTwistRadius != undefined ? animData.jawTwistRadius : 0);
+        var bend = - recipe[i][8] / 180 * Math.PI;
+        var twist = recipe[i][9] / 180 * Math.PI;
+        var side = recipe[i][10] / 180 * Math.PI;
         side += twist * animData.twistToSide;
         var sideLength = animData.sideLength;
-        var x = recipe[i][10+compat];
-        var y = recipe[i][11+compat];
+        var lowerJawDisplacement = animData.lowerJawDisplacement;
+        var lowerJaw = recipe[i][8];
+        var x = recipe[i][11];
+        var y = recipe[i][12];
         // Bend/twist are a non-linear z-rotate - side and x,y are linear - prepare a matrix for the linear portion.
         // 0 2 4 
         // 1 3 5
@@ -833,11 +834,6 @@ function CharApiClient(divid, params) {
         if (x || y) {
             addXForm(1, 0, 0, 1, x, y, m);
         }
-        // Assume same size for destination image as for src, and compute where the origin will fall
-        var xDstImage = Math.floor(xSrcImage + rt * Math.sin(twist));
-        var yDstImage = Math.floor(ySrcImage - rb * Math.sin(bend));
-        var deltax = xDstImage - xSrcImage;
-        var deltay = yDstImage - ySrcImage;
         // Extract the portion of the image we want to a new temp context and get its bits as the source
         if (!canvasTransformSrc[process-1]) {
             canvasTransformSrc[process-1] = document.createElement('canvas');
@@ -854,68 +850,114 @@ function CharApiClient(divid, params) {
             canvasTransformDst[process-1].height = height;
         }
         var target = canvasTransformSrc[process-1].getContext('2d').createImageData(width, height);
-        // Setup feathering
-        var a = width / 2;
-        var b = height / 2;
-        var xp = width - 5; // 5 pixel feathering
-        var vp = (xp-a)*(xp-a)/(a*a);
-        // Main loop
-        var xDstGlobal,yDstGlobal,xSrcGlobalZ,ySrcGlobalZ,xSrcGlobal,ySrcGlobal,xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
-        var offDst = 0;
-        for (var yDst = 0; yDst < height; yDst++) {
-            for (var xDst = 0; xDst < width; xDst++) {
-                xDstGlobal = xDst + 0.001 - width/2 + deltax ;
-                yDstGlobal = yDst + 0.001 - height/2 + deltay;
-                // z-rotate on an elliptic sphere with radius rb, rt
-                xSrcGlobalZ = rt * Math.sin(Math.asin(xDstGlobal/rt) - twist);
-                ySrcGlobalZ = rb * Math.sin(Math.asin(yDstGlobal/rb) + bend);
-                xSrcGlobal = m[0] * xSrcGlobalZ + m[2] * ySrcGlobalZ + m[4];
-                ySrcGlobal = m[1] * xSrcGlobalZ + m[3] * ySrcGlobalZ + m[5];
-                xSrc = xSrcGlobal + width/2;
-                ySrc = ySrcGlobal + height/2;
-                // bilinear interpolation - https://en.wikipedia.org/wiki/Bilinear_interpolation
-                x1Src = Math.max(Math.min(Math.floor(xSrc), width-1), 0);
-                x2Src = Math.max(Math.min(Math.ceil(xSrc), width-1), 0);
-                y1Src = Math.max(Math.min(Math.floor(ySrc), height-1), 0);
-                y2Src = Math.max(Math.min(Math.ceil(ySrc), height-1), 0);
-                if (x1Src == x2Src) {
-                    if (x1Src == 0) x2Src++; else x1Src--;
-                }
-                if (y1Src == y2Src) {
-                    if (y1Src == 0) y2Src++; else y1Src--;
-                }
-                // ImageData pixel ordering is RGBA
-                offSrc1 = y1Src*4*width + x1Src*4;
-                offSrc2 = y1Src*4*width + x2Src*4;
-                offSrc3 = y2Src*4*width + x1Src*4;
-                offSrc4 = y2Src*4*width + x2Src*4;
-                rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
-                gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
-                bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
-                var alpha;
-                if (process == 1) {
-                    var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
-                    if (v > 1) 
-                        alpha = 0;
-                    else if (v >= vp && v <= 1) 
-                        alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
-                    else
+        // Return the image displacement
+        var deltax = 0;
+        var deltay = 0;
+        if (process == 1 || animData.jawBendRadius != undefined) {
+            // Assume same size for destination image as for src, and compute where the origin will fall
+            var xDstImage = Math.floor(xSrcImage + rt * Math.sin(twist));
+            var yDstImage = Math.floor(ySrcImage - rb * Math.sin(bend));
+            deltax = xDstImage - xSrcImage;
+            deltay = yDstImage - ySrcImage;
+            // Setup feathering
+            var a = width / 2;
+            var b = height / 2;
+            var xp = width - 5; // 5 pixel feathering
+            var vp = (xp-a)*(xp-a)/(a*a);
+            // Main loop
+            var xDstGlobal,yDstGlobal,xSrcGlobalZ,ySrcGlobalZ,xSrcGlobal,ySrcGlobal,xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
+            var offDst = 0;
+            for (var yDst = 0; yDst < height; yDst++) {
+                for (var xDst = 0; xDst < width; xDst++) {
+                    xDstGlobal = xDst + 0.001 - width/2 + deltax ;
+                    yDstGlobal = yDst + 0.001 - height/2 + deltay;
+                    // z-rotate on an elliptic sphere with radius rb, rt
+                    xSrcGlobalZ = rt * Math.sin(Math.asin(xDstGlobal/rt) - twist);
+                    ySrcGlobalZ = rb * Math.sin(Math.asin(yDstGlobal/rb) + bend);
+                    xSrcGlobal = m[0] * xSrcGlobalZ + m[2] * ySrcGlobalZ + m[4];
+                    ySrcGlobal = m[1] * xSrcGlobalZ + m[3] * ySrcGlobalZ + m[5];
+                    xSrc = xSrcGlobal + width/2;
+                    ySrc = ySrcGlobal + height/2;
+                    // bilinear interpolation - https://en.wikipedia.org/wiki/Bilinear_interpolation
+                    x1Src = Math.max(Math.min(Math.floor(xSrc), width-1), 0);
+                    x2Src = Math.max(Math.min(Math.ceil(xSrc), width-1), 0);
+                    y1Src = Math.max(Math.min(Math.floor(ySrc), height-1), 0);
+                    y2Src = Math.max(Math.min(Math.ceil(ySrc), height-1), 0);
+                    if (x1Src == x2Src) {
+                        if (x1Src == 0) x2Src++; else x1Src--;
+                    }
+                    if (y1Src == y2Src) {
+                        if (y1Src == 0) y2Src++; else y1Src--;
+                    }
+                    // ImageData pixel ordering is RGBA
+                    offSrc1 = y1Src*4*width + x1Src*4;
+                    offSrc2 = y1Src*4*width + x2Src*4;
+                    offSrc3 = y2Src*4*width + x1Src*4;
+                    offSrc4 = y2Src*4*width + x2Src*4;
+                    rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
+                    gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
+                    bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
+                    var alpha;
+                    if (process == 1) {
+                        var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
+                        if (v > 1) 
+                            alpha = 0;
+                        else if (v >= vp && v <= 1) 
+                            alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
+                        else
+                            alpha = 255;
+                    }
+                    else if (process == 2) {
+                        alpha = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+3] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+3] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+3] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+3]);
+                        if (yDst < height/10)
+                            alpha = Math.min(alpha, yDst /  (height/10) * 255);
+                    }
+                    else {
                         alpha = 255;
+                    }
+                    target.data[offDst] = rint; offDst++;
+                    target.data[offDst] = gint; offDst++;
+                    target.data[offDst] = bint; offDst++;
+                    target.data[offDst] = alpha; offDst++;
                 }
-                else if (process == 2) {
+            }
+        }
+        else if (process == 2) {
+            // Main loop
+            var xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
+            var offDst = 0;
+            for (var yDst = 0; yDst < height; yDst++) {
+                for (var xDst = 0; xDst < width; xDst++) {
+                    xSrc = xDst;
+                    ySrc = yDst - (lowerJaw * lowerJawDisplacement * yDst / height);
+                    x1Src = Math.max(Math.min(Math.floor(xSrc), width-1), 0);
+                    x2Src = Math.max(Math.min(Math.ceil(xSrc), width-1), 0);
+                    y1Src = Math.max(Math.min(Math.floor(ySrc), height-1), 0);
+                    y2Src = Math.max(Math.min(Math.ceil(ySrc), height-1), 0);
+                    if (x1Src == x2Src) {
+                        if (x1Src == 0) x2Src++; else x1Src--;
+                    }
+                    if (y1Src == y2Src) {
+                        if (y1Src == 0) y2Src++; else y1Src--;
+                    }
+                    offSrc1 = y1Src*4*width + x1Src*4;
+                    offSrc2 = y1Src*4*width + x2Src*4;
+                    offSrc3 = y2Src*4*width + x1Src*4;
+                    offSrc4 = y2Src*4*width + x2Src*4;
+                    rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
+                    gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
+                    bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
+                    var alpha;
                     alpha = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+3] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+3] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+3] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+3]);
                     if (yDst < height/10)
                         alpha = Math.min(alpha, yDst /  (height/10) * 255);
+                    target.data[offDst] = rint; offDst++;
+                    target.data[offDst] = gint; offDst++;
+                    target.data[offDst] = bint; offDst++;
+                    target.data[offDst] = alpha; offDst++;
                 }
-                else {
-                    alpha = 255;
-                }
-                target.data[offDst] = rint; offDst++;
-                target.data[offDst] = gint; offDst++;
-                target.data[offDst] = bint; offDst++;
-                target.data[offDst] = alpha; offDst++;
             }
-        }       
+        }
         canvasTransformDst[process-1].getContext('2d').putImageData(target, 0, 0);
         return {x:deltax, y:deltay};
     }
