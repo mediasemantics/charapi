@@ -532,7 +532,6 @@ function CharApiClient(divid, params) {
         if (saveState) addedParams += "&initialstate=" + initialState;
         addedParams = addedParams + '&tag=' + encodeURIComponent(tag);
         addedParams = addedParams + '&say=' + encodeURIComponent(say);
-        addedParams = addedParams + '&with=all';
         if (say && audio && lipsync) {
             addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         }
