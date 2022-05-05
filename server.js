@@ -499,7 +499,7 @@ function getActionFromActionTemplate(action, say, audiotag, bob, character) {
                 s += a[i]; // regular action commands
             }
             else {
-                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"')); // quick parse
+                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"').replace('hold','"hold":1'));
                 if (rec.silence) {
                     s += '[silence ' + rec.silence + 'ms]';
                     continue;
@@ -557,7 +557,7 @@ function getActionFromActionTemplate(action, say, audiotag, bob, character) {
                 s += a[i]; // regular action commands
             }
             else {
-                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"'));
+                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"').replace('hold','"hold":1'));
                 if (rec.max) s += "<pause/>"; // this is what we had before our switch to +{}+ commands
             }
         }

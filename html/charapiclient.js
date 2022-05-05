@@ -696,7 +696,7 @@ function CharApiClient(divid, params) {
                                     }
                                     else if (params.format == "jpeg") {
                                         // jpeg - all overlays should avoid the edge pixels
-                                        var buf = i > 1 ? 1 : 0;
+                                        var buf = i > 1 ? 0 : 0;
                                         ctx.drawImage(src,
                                             recipe[i][2] + buf, recipe[i][3] + buf,
                                             recipe[i][4] - buf*2, recipe[i][5] - buf * 2,
@@ -819,6 +819,8 @@ function CharApiClient(divid, params) {
         var sideLength = animData.sideLength;
         var lowerJawDisplacement = animData.lowerJawDisplacement;
         var lowerJaw = recipe[i][8];
+        var shoulderDisplacement = animData.shoulderDisplacement;
+        var shoulders = recipe[i][8];
         var x = recipe[i][11];
         var y = recipe[i][12];
         // Bend/twist are a non-linear z-rotate - side and x,y are linear - prepare a matrix for the linear portion.
@@ -861,8 +863,11 @@ function CharApiClient(divid, params) {
             // Setup feathering
             var a = width / 2;
             var b = height / 2;
-            var xp = width - 5; // 5 pixel feathering
+            var fudge = Math.round(width/40) - 1;
+            var xp = width - 5 - fudge; // 5 pixel feathering
+            var xpp = width - fudge; // but don't consider very edge pixels, at least in hi res
             var vp = (xp-a)*(xp-a)/(a*a);
+            var vpp = (xpp-a)*(xpp-a)/(a*a);
             // Main loop
             var xDstGlobal,yDstGlobal,xSrcGlobalZ,ySrcGlobalZ,xSrcGlobal,ySrcGlobal,xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
             var offDst = 0;
@@ -899,10 +904,10 @@ function CharApiClient(divid, params) {
                     var alpha;
                     if (process == 1) {
                         var v = (xDst-a)*(xDst-a)/(a*a) + (yDst-b)*(yDst-b)/(b*b);
-                        if (v > 1) 
+                        if (v > vpp) 
                             alpha = 0;
-                        else if (v >= vp && v <= 1) 
-                            alpha = Math.round(255 * (1 - ((v - vp)/(1 - vp))));
+                        else if (v >= vp && v <= vpp) 
+                            alpha = Math.round(255 * (vpp - ((v - vp)/(vpp - vp))));
                         else
                             alpha = 255;
                     }
@@ -956,6 +961,9 @@ function CharApiClient(divid, params) {
                     target.data[offDst] = alpha; offDst++;
                 }
             }
+        }
+        else if (process == 3) {
+            target = source; // shoulder movement is a WIP
         }
         canvasTransformDst[process-1].getContext('2d').putImageData(target, 0, 0);
         return {x:deltax, y:deltay};
