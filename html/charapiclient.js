@@ -129,7 +129,7 @@ function CharApiClient(divid, params) {
 
     function characterLoaded() {
         var topDiv = document.getElementById(divid + "-top");
-        topDiv.style.visibility = "visible";
+        if (topDiv) topDiv.style.visibility = "visible";
 
         // NOTE: dispatched as soon as we become visible (we become visible all at once) - client could immediately set to an alpha of 0 and fade in over time with their own fade, or whatever
         document.getElementById(divid).dispatchEvent(createEvent("characterLoaded"));
@@ -750,7 +750,7 @@ function CharApiClient(divid, params) {
 
     function stopAll() {
         if (audioContext) {
-            gainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.015);
+            if (gainNode) gainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.015);
             timeSinceLastAudioStopped = Date.now();
         }
         else {
