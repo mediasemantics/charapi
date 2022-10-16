@@ -306,6 +306,7 @@ function finish(req, res, filebase, type, format) {
     if ((req.get("Origin") || "").indexOf("localhost") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));
     // TODO: IMPORTANT: Uncomment and fill in your domain here for CORS protection
     //else if ((req.get("Origin")||"").indexOf("yourdomain.com") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));*/
+    res.setHeader('Vary', 'Origin');
 	res.setHeader('Cache-Control', 'max-age=31536000, public'); // 1 year (long!)
 	res.setHeader('content-type', targetMime(type, format));
 	frstream.pipe(res);        
@@ -487,7 +488,7 @@ function getActionFromActionTemplate(action, say, audiotag, bob, character) {
         say = say.replace(/'/g, "&apos;");
         //console.log("seed="+seed+" bob="+bob);
         // action: "<lookleft/><gestureleft/><cmd type='apogee'>+{max:5}+<lookuser/><handsbyside/>+{max:0,user:1}"
-        var a = action ? action.split("+") : ["{max:0,user:1}"];  // latter is the default Look At User (user=1 means character is looking at the user)
+        var a = action ? action.split("+") : (getActionTemplateFromTag("look-default", character) || "{max:0,user:1}").split("+");  // latter is the default Look At User (user=1 means character is looking at the user)
         // e.g. a = ["{max:0,user:1}"]
         //      a = ["<lookleft/><gestureleft/><cmd type='apogee'>", "{max:5}", "<lookuser/><handsbyside/>", "{max:0,user:1}"]
         var b = splitSay(say); // e.g. ["this", "is", "a", "test"]
