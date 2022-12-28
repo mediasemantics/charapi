@@ -295,6 +295,7 @@ function CharApiClient(divid, params) {
     // Settle feature
     var timeSinceLastAudioStopped = 0;   // Used to detect if and how much we should settle for
     var settleTimeout;              // If non-0, we are animating true but are delaying slightly at the beginning to prevent back-to-back audio
+    var delayTimeout;               // If non-0, we are animating true but are delaying audio slightly for leadingSilence
 
     // Preloading
     var preload = true;         // Master switch (a param normally)
@@ -338,6 +339,7 @@ function CharApiClient(divid, params) {
 
         timeSinceLastAudioStopped = 0;
         settleTimeout = undefined;
+        delayTimeout = undefined;
 
         preload = true;
         preloaded = [];
@@ -363,18 +365,29 @@ function CharApiClient(divid, params) {
 
         secondaryTextures = {};
         if (saveState) addedParams += "&initialstate=" + initialState;
-        addedParams = addedParams + '&tag=' + tag;
-        addedParams = addedParams + '&say=' + encodeURIComponent(say);
+        addedParams = addedParams + '&do=' + (tag||"");
+        addedParams = addedParams + '&say=' + encodeURIComponent(say||"");
         if (bobType == "none") addedParams = addedParams + '&bob=false';
 
-        if (say && audio && lipsync)
-            speakRecorded(addedParams, audio, lipsync);
-        else if (say)
-            speakTTS(addedParams);
-        else
+        if (say && containsActualSpeech(say)) {
+            if (audio && lipsync)
+                speakRecorded(addedParams, audio, lipsync);
+            else 
+                speakTTS(addedParams);
+        }
+        else {
             loadAnimation(addedParams, false, idle);
+        }
     }
 
+    function containsActualSpeech(say) {
+        if (!say) return false;
+        var textOnly = say.replace(/\[[^\]]*\]/g, ""); // e.g. "Look [cmd] here." --> "Look here."
+        if (!textOnly) return false;
+        var hasNonWhitespace = !!textOnly.match(/\S/);
+        return hasNonWhitespace;
+    }
+    
     function speakRecorded(addedParams, audioURL, lipsync) {
         addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         // load the audio, but hold it
@@ -530,8 +543,8 @@ function CharApiClient(divid, params) {
     function preloadExecute(tag, say, audio, lipsync) {
         var addedParams = "";
         if (saveState) addedParams += "&initialstate=" + initialState;
-        addedParams = addedParams + '&tag=' + encodeURIComponent(tag);
-        addedParams = addedParams + '&say=' + encodeURIComponent(say);
+        addedParams = addedParams + '&do=' + encodeURIComponent(tag||"");
+        addedParams = addedParams + '&say=' + encodeURIComponent(say||"");
         if (say && audio && lipsync) {
             addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         }
@@ -588,13 +601,29 @@ function CharApiClient(divid, params) {
             settleTimeout = setTimeout(onSettleComplete.bind(null, startAudio), 333 - (t - timeSinceLastAudioStopped));
         }
         else {
-            getItStartedActual(startAudio);
+            getItStartedCheckDelay(startAudio);
         }
     }
 
     function onSettleComplete(startAudio) {
         settleTimeout = 0;
-        getItStartedActual(startAudio);
+        getItStartedCheckDelay(startAudio);
+    }
+
+    function getItStartedCheckDelay(startAudio) {
+		if (delayTimeout) {clearTimeout(delayTimeout); delayTimeout = 0;}
+        if (animData.leadingSilence && startAudio) {
+            delayTimeout = setTimeout(onDelayComplete, animData.leadingSilence);
+            getItStartedActual(false);
+        }
+        else {
+            getItStartedActual(startAudio);
+        }
+    }
+
+    function onDelayComplete() {
+        delayTimeout = 0;
+        getItStartedActual(true);
     }
 
     function getItStartedActual(startAudio) {
@@ -765,6 +794,10 @@ function CharApiClient(divid, params) {
             animating = false;
             animateComplete();
         }
+		if (delayTimeout) {
+            clearTimeout(delayTimeout);
+            delayTimeout = 0;
+		}
     }
 
     function animateFailed() {

@@ -78,7 +78,9 @@ app.get('/animate', function(req, res, next) {
             "chary":"0",
             "fps":"24",
             "quality":"95",
-            "backcolor":"ffffff"
+            "backcolor":"ffffff",
+            "do":req.query.do,
+            "say":req.query.say,
         };
     
         // Add to that any other parameters that are variable, from the client
@@ -91,26 +93,19 @@ app.get('/animate', function(req, res, next) {
 
         // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
         // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
-        // if (o.action && o.action.length > 256) throw new Error('limit reached'); // limit message length
+        // if (o.say && o.say.length > 256) throw new Error('limit reached'); // limit message length
         // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
 
         // Things break further on if we don't have defaults on these
         if (!o.format) o.format = "png";
-        if (!o.action) o.action = "";
         
-        // Derive the low-level action from the high-level tag+say pair
-        var action;
-        setRandomSeed(req.query.say);
-        var actionTemplate = getActionTemplateFromTag(req.query.tag, o.character);
-        action = getActionFromActionTemplate(actionTemplate, req.query.say, req.query.audio, req.query.bob||true, o.character);
-        o.action = action;
-        if (action) o["with"] = "all";  // all but the initial empty action requests that output be generated that assumes we will fetch all textures
+        if (o.do || o.say) o["with"] = "all";  // all but the initial empty action requests that output be generated that assumes we will fetch all textures
         
         // Now use all these parameters to create a hash that becomes the file type
         var crypto = require('crypto');
         var hash = crypto.createHash('md5');
         for (var key in o)
-            hash.update(o[key]);
+            hash.update(o[key]||"");
         hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
         if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes, to defeat browser caching
         var filebase = hash.digest("hex");
@@ -133,7 +128,7 @@ app.get('/animate', function(req, res, next) {
                     // Cache miss - do the work!
 
                     // Case where there is no tts and we can send straight to animate
-                    if (o.action.indexOf("<say>") == -1 || o.lipsync)
+                    if (!containsActualSpeech(o.say) || o.lipsync)
                     {
                         o.key = charAPIKey;
                         o.zipdata = true;
@@ -167,7 +162,7 @@ app.get('/animate', function(req, res, next) {
                     // Case where we need to get tts and lipsync it first
                     else
                     {
-                        var textOnly = action.replace(new RegExp("<[^>]*>", "g"), "").replace("  ", " "); // e.g. <say>Look <cmd/> here.</say> --> Look here.
+                        var textOnly = removeAllButSpeechTags(o.say);
                         doParallelTTS(textOnly, voice, function(err, audioData, lipsyncData) {
                             if (err) return next(new Error(err.message));
                             fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
@@ -176,8 +171,7 @@ app.get('/animate', function(req, res, next) {
                                 o.key = charAPIKey;
                                 o.zipdata = true;
                                 o.lipsync = lipsyncData;
-                                // any other tag conversions
-                                o.action = remainingTagsToXML(cmdTagsToXML(removeSpeechTags(o.action)));
+                                o.say = removeSpeechTags(o.say);
                                 console.log("---> calling animate w/ "+JSON.stringify(o));						
                                 var animateTimeStart = new Date();						
                                 request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
@@ -207,6 +201,14 @@ app.get('/animate', function(req, res, next) {
         });
     });
 });
+
+function containsActualSpeech(say) {
+    if (!say) return false;
+    let textOnly = say.replace(/\[[^\]]*\]/g, ""); // e.g. "Look [cmd] here." --> "Look here."
+    if (!textOnly) return false;
+    let hasNonWhitespace = !!textOnly.match(/\S/);
+    return hasNonWhitespace;
+}
 
 function loadCatalogIfNecessary(callback) {
     var timestampNow = (new Date()).getTime();
@@ -312,117 +314,103 @@ function finish(req, res, filebase, type, format) {
 	frstream.pipe(res);        
 }
 
-function msToSSML(s) {
-    var ret = ssmlHelper(s, true);
+function msToSSML(s) { // e.g. "[silence] Look here." --> "<break time="1s"/> Look here."    
+    var ret = ssmlHelper(s, 1);
     // Any remaining tags can be eliminated for tts
     ret = ret.replace(/\[[^\]]*\]/g, "").replace("  "," "); // e.g. Look [cmd] here. --> Look here.
     return ret;
 }
 
-function removeSpeechTags(s) {
-    return ssmlHelper(s, false);
+function removeSpeechTags(s) {  // e.g. "[silence] Look [blink] here." --> "Look [blink] here."    
+    let temp = ssmlHelper(s, 2);
+    temp = temp.replace(/  /g, " ").trim();
+    return temp;
 }
 
-function ssmlHelper(s, use) {
-    var old = s;
+function removeAllButSpeechTags(s) {  // e.g. "[silence] Look [blink] here." --> "[silence] Look here."    
+    let temp = ssmlHelper(s, 3);
+    temp = temp.replace(new RegExp("\[[^\]]*\]", "g"), "").replace("  ", " ").trim(); // e.g. "Look [cmd] here." --> "Look here."    
+    temp = temp.replace(/\{/g,'[');
+    temp = temp.replace(/\}/g,']');
+    return temp;
+}
+
+function ssmlHelper(s, c) {
+    //var old = s;
     
     // SSML is very strict about closing tags - we try to automatically close some tags
-    if (use && s.indexOf("[conversational]") != -1 && s.indexOf("[/conversational]") == -1) s += "[/conversational]";
-    if (use && s.indexOf("[news]") != -1 && s.indexOf("[/news]") == -1) s += "[/news]";
+    if (c==1 && s.indexOf("[conversational]") != -1 && s.indexOf("[/conversational]") == -1) s += "[/conversational]";
+    if (c==1 && s.indexOf("[news]") != -1 && s.indexOf("[/news]") == -1) s += "[/news]";
 
     // Super-useful [spoken]...[/spoken][written]...[/written] (take all of spoken, take none of written)
-    s = s.replace(/\[spoken\](.*?)\[\/spoken\]/g, use ? "$1" : "");
-    s = s.replace(/\[written\](.*?)\[\/written\]/g, use ? "" : "$1");
+    s = s.replace(/\[spoken\](.*?)\[\/spoken\]/g, c==1 ? "$1" : (c==2 ? '$1': '{spoken}$1{/spoken}'));
+    s = s.replace(/\[written\](.*?)\[\/written\]/g, c==1 ? "" : (c==2 ? '': '{written}$1{/written}'));
 
     // Pause
-    s = s.replace(/\[silence ([0-9.]*)s\]/g, use ? '<break time="$1s"/>' : '');      // [silence 1.5s]
-    s = s.replace(/\[silence ([0-9.]*)ms\]/g, use ? '<break time="$1ms"/>' : '');      // [silence 300ms]
+    s = s.replace(/\[silence\]/g, c==1 ? '<break time="1s"/>' : (c==2 ? '': '[silence]'));      // [silence]
+    s = s.replace(/\[silence ([0-9.]*)s\]/g, c==1 ? '<break time="$1s"/>' : (c==2 ? '': '[silence $1s]'));      // [silence 1.5s]
+    s = s.replace(/\[silence ([0-9.]*)ms\]/g, c==1 ? '<break time="$1ms"/>' : (c==2 ? '': '[silence $1ms]'));      // [silence 300ms]
     
     // Emphasis - note that these are not supported by polly except in non-neural, which we try to avoid, so eliminating from the speech tags for now.
     
     // Language
-    s = s.replace(/\[english\]/g, use ? '<lang xml:lang="en-US">' : '');      // [english]...[/english]
-    s = s.replace(/\[\/english\]/g, use ? '</lang>' : '');                    
-    s = s.replace(/\[french\]/g, use ? '<lang xml:lang="fr-FR">' : '');      // [french]...[/french]
-    s = s.replace(/\[\/french\]/g, use ? '</lang>' : '');                    
-    s = s.replace(/\[spanish\]/g, use ? '<lang xml:lang="es">' : '');      // [spanish]...[/spanish]
-    s = s.replace(/\[\/spanish\]/g, use ? '</lang>' : '');                    
-    s = s.replace(/\[italian\]/g, use ? '<lang xml:lang="it">' : '');      // [italian]...[/italian]
-    s = s.replace(/\[\/italian\]/g, use ? '</lang>' : '');                    
-    s = s.replace(/\[german\]/g, use ? '<lang xml:lang="de">' : '');      // [german]...[/german]
-    s = s.replace(/\[\/german\]/g, use ? '</lang>' : '');                    
+    s = s.replace(/\[english\]/g, c==1 ? '<lang xml:lang="en-US">' : (c==2 ? '': '{english}'));      // [english]...[/english]
+    s = s.replace(/\[\/english\]/g, c==1 ? '</lang>' : (c==2 ? '': '{/english}'));                    
+    s = s.replace(/\[french\]/g, c==1 ? '<lang xml:lang="fr-FR">' : (c==2 ? '': '{french}'));      // [french]...[/french]
+    s = s.replace(/\[\/french\]/g, c==1 ? '</lang>' : (c==2 ? '': '{/french}'));                    
+    s = s.replace(/\[spanish\]/g, c==1 ? '<lang xml:lang="es">' : (c==2 ? '': '{spanish}'));      // [spanish]...[/spanish]
+    s = s.replace(/\[\/spanish\]/g, c==1 ? '</lang>' : (c==2 ? '': '{/spanish}'));                    
+    s = s.replace(/\[italian\]/g, c==1 ? '<lang xml:lang="it">' : (c==2 ? '': '{italian}'));      // [italian]...[/italian]
+    s = s.replace(/\[\/italian\]/g, c==1 ? '</lang>' : (c==2 ? '': '{/italian}'));                    
+    s = s.replace(/\[german\]/g, c==1 ? '<lang xml:lang="de">' : (c==2 ? '': '{german}'));      // [german]...[/german]
+    s = s.replace(/\[\/german\]/g, c==1 ? '</lang>' : (c==2 ? '': '{/german}'));                    
 
     // Say as
-    s = s.replace(/\[spell\]/g, use ? '<say-as interpret-as="characters">' : '');      // [spell]a[/spell]
-    s = s.replace(/\[\/spell\]/g, use ? '</say-as>' : '');
-    s = s.replace(/\[digits\]/g, use ? '<say-as interpret-as="digits">' : '');      // [digits]123[/digits]
-    s = s.replace(/\[\/digits\]/g, use ? '</say-as>' : '');
-    s = s.replace(/\[verb\]/g, use ? '<w role="amazon:VB">' : '');      // [verb]present[/verb]
-    s = s.replace(/\[\/verb\]/g, use ? '</w>' : '');
-    s = s.replace(/\[past\]/g, use ? '<w role="amazon:VBD">' : '');      // [past]present[/past]
-    s = s.replace(/\[\/past\]/g, use ? '</w>' : '');
-    s = s.replace(/\[alt\]/g, use ? '<w role="amazon:SENSE_1">' : '');      // [alt]bass[/alt]
-    s = s.replace(/\[\/alt\]/g, use ? '</w>' : '');
+    s = s.replace(/\[spell\]/g, c==1 ? '<say-as interpret-as="characters">' : (c==2 ? '': '{spell}'));      // [spell]a[/spell]
+    s = s.replace(/\[\/spell\]/g, c==1 ? '</say-as>' : (c==2 ? '': '{/spell}'));
+    s = s.replace(/\[digits\]/g, c==1 ? '<say-as interpret-as="digits">' : (c==2 ? '': '{digits}'));      // [digits]123[/digits]
+    s = s.replace(/\[\/digits\]/g, c==1 ? '</say-as>' : (c==2 ? '': '{/digits}'));
+    s = s.replace(/\[verb\]/g, c==1 ? '<w role="amazon:VB">' : (c==2 ? '': '{verb}'));      // [verb]present[/verb]
+    s = s.replace(/\[\/verb\]/g, c==1 ? '</w>' : (c==2 ? '': '{/verb}'));
+    s = s.replace(/\[past\]/g, c==1 ? '<w role="amazon:VBD">' : (c==2 ? '': '{past}'));      // [past]present[/past]
+    s = s.replace(/\[\/past\]/g, c==1 ? '</w>' : (c==2 ? '': '{/past}'));
+    s = s.replace(/\[alt\]/g, c==1 ? '<w role="amazon:SENSE_1">' : (c==2 ? '': '{alt}'));      // [alt]bass[/alt]
+    s = s.replace(/\[\/alt\]/g, c==1 ? '</w>' : (c==2 ? '': '{/alt}'));
 
     // Breathing not supported by neural, so will not include it
 
-    s = s.replace(/\[ipa (.*?)\]/g, use ? '<phoneme alphabet="ipa" ph="$1">' : '');      // [ipa pɪˈkɑːn]pecan[/ipa]
-    s = s.replace(/\[\/ipa\]/g, use ? '</phoneme>' : '');
+    s = s.replace(/\[ipa (.*?)\]/g, c==1 ? '<phoneme alphabet="ipa" ph="$1">' : (c==2 ? '': '{ipa $1}'));      // [ipa pɪˈkɑːn]pecan[/ipa]
+    s = s.replace(/\[\/ipa\]/g, c==1 ? '</phoneme>' : (c==2 ? '': '{/ipa}'));
     var m;
     while (m = s.match(/\[sampa (.*?)\]/)) {
-        s = s.replace(m[0], use ? '<phoneme alphabet="x-sampa" ph="' + m[1].replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;") + '">' : '');
+        s = s.replace(m[0], c==1 ? '<phoneme alphabet="x-sampa" ph="' + m[1].replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;") + '">' : (c==2 ? '': '{sampa $1}'));
     }
-    s = s.replace(/\[\/sampa\]/g, use ? '</phoneme>' : '');
-    s = s.replace(/\[pinyin (.*?)\]/g, use ? '<phoneme alphabet="x-amazon-pinyin" ph="$1">' : '');      // [pinyin bao2]薄[/pinyin]
-    s = s.replace(/\[\/pinyin\]/g, use ? '</phoneme>' : '');
+    s = s.replace(/\[\/sampa\]/g, c==1 ? '</phoneme>' : (c==2 ? '': '{/sampa}'));
+    s = s.replace(/\[pinyin (.*?)\]/g, c==1 ? '<phoneme alphabet="x-amazon-pinyin" ph="$1">' : (c==2 ? '': '{pinyin}'));      // [pinyin bao2]薄[/pinyin]
+    s = s.replace(/\[\/pinyin\]/g, c==1 ? '</phoneme>' : (c==2 ? '': '{/pinyin}'));
 
-    s = s.replace(/\[drc\]/g, use ? '<amazon:effect name="drc">' : '');      // [drc]dynamic range correction[/drc]
-    s = s.replace(/\[\/drc\]/g, use ? '</amazon:effect>' : '');
+    s = s.replace(/\[drc\]/g, c==1 ? '<amazon:effect name="drc">' : (c==2 ? '': '{drc}'));      // [drc]dynamic range correction[/drc]
+    s = s.replace(/\[\/drc\]/g, c==1 ? '</amazon:effect>' : (c==2 ? '': '{/drc}'));
     
     // Speaking style
-    s = s.replace(/\[conversational\]/g, use ? '<amazon:domain name="conversational">' : '');      // [conversational]...[/conversational]
-    s = s.replace(/\[\/conversational\]/g, use ? '</amazon:domain>' : '');
-    s = s.replace(/\[news\]/g, use ? '<amazon:domain name="news">' : '');      // [news]...[/news]
-    s = s.replace(/\[\/news\]/g, use ? '</amazon:domain>' : ''); 
+    s = s.replace(/\[conversational\]/g, c==1 ? '<amazon:domain name="conversational">' : (c==2 ? '': '{conversational}'));      // [conversational]...[/conversational]
+    s = s.replace(/\[\/conversational\]/g, c==1 ? '</amazon:domain>' : (c==2 ? '': '{/conversational}'));
+    s = s.replace(/\[news\]/g, c==1 ? '<amazon:domain name="news">' : (c==2 ? '': '{news}'));      // [news]...[/news]
+    s = s.replace(/\[\/news\]/g, c==1 ? '</amazon:domain>' : (c==2 ? '': '{/news}')); 
     
     // volume
-    s = s.replace(/\[volume (.*?)\]/g, use ? '<prosody volume="$1">' : '');      // [volume loud]...[/volume] [volume -6dB]...[/volume]
-    s = s.replace(/\[\/volume\]/g, use ? '</prosody>' : ''); 
+    s = s.replace(/\[volume (.*?)\]/g, c==1 ? '<prosody volume="$1">' : (c==2 ? '': '{volume $1}'));      // [volume loud]...[/volume] [volume -6dB]...[/volume]
+    s = s.replace(/\[\/volume\]/g, c==1 ? '</prosody>' : (c==2 ? '': '{/volume}')); 
     // rate
-    s = s.replace(/\[rate (.*?)\]/g, use ? '<prosody rate="$1">' : '');      // [rate slow]...[/rate] [rate 80%]...[/rate]
-    s = s.replace(/\[\/rate\]/g, use ? '</prosody>' : ''); 
+    s = s.replace(/\[rate (.*?)\]/g, c==1 ? '<prosody rate="$1">' : (c==2 ? '': '{rate $1}'));      // [rate slow]...[/rate] [rate 80%]...[/rate]
+    s = s.replace(/\[\/rate\]/g, c==1 ? '</prosody>' : (c==2 ? '': '{/rate}')); 
     // pitch
-    s = s.replace(/\[pitch (.*?)\]/g, use ? '<prosody pitch="$1">' : '');      // [pitch high]...[/pitch] [pitch +5%]...[/pitch]
-    s = s.replace(/\[\/pitch\]/g, use ? '</prosody>' : ''); 
+    s = s.replace(/\[pitch (.*?)\]/g, c==1 ? '<prosody pitch="$1">' : (c==2 ? '': '{pitch $1}'));      // [pitch high]...[/pitch] [pitch +5%]...[/pitch]
+    s = s.replace(/\[\/pitch\]/g, c==1 ? '</prosody>' : (c==2 ? '': '{/pitch}')); 
             
     //if (use && s != old) console.log("SSML: " + old + " -> " + s);
-    if (use) return "<speak>" + s + "</speak>";
+    if (c==1) return "<speak>" + s + "</speak>";
     else return s;
-}
-
-function cmdTagsToXML(s) {
-    // [cmd] -> <cmd/>
-    // [cmd type="foo" arg="bar"] -> <cmd type="foo" arg="bar"/>
-    var m,mm;
-    while (m = s.match(/\[cmd(.*?)\]/)) {
-        var args = m[1];
-        let t = '<cmd';
-        while (mm = args.match(/\w*=".*?"/)) {
-            t = t + ' ' + mm[0];
-            args = args.replace(mm[0],"");
-		}
-        t = t + '/>';
-        s = s.replace(m[0], t);
-    }
-    return s;
-}
-
-function remainingTagsToXML(s) {
-    // [headright] -> <headright/>
-    s = s.replace(/\[([\w-]*?)\]/g, '<$1/>');
-    // [pause 500ms] -> <pause msec="$1"/>
-    s = s.replace(/\[pause (.*?)ms\]/g, '<pause msec="$1"/>');
-    return s;
 }
 
 // Catalog lookup 
@@ -441,152 +429,6 @@ function characterObject(id) {
     return null;
 }
 
-function actionCategoryObject(id) {
-    for (var i = 0; i < catalog.actionCategories.length ; i++)
-        if (catalog.actionCategories[i].id == id)
-            return catalog.actionCategories[i];
-    return null;
-}
-
-function getActionTemplateFromTag(tag, character) {
-    var style = characterObject(character).style;
-    for (var i = 0; i < catalog.actions.length; i++) {
-        if (catalog.actions[i].id == tag) {
-            var category = actionCategoryObject(catalog.actions[i].category);
-            if (!category || !category.characterStyles || category.characterStyles.indexOf(style) != -1)  // Because characters that don't support a certain action should ignore that action
-                return catalog.actions[i].xml;
-        }
-    }
-    return "";
-}
-
-// Seeded random
-
-var seed = 1;
-
-function setRandomSeed(say) {
-    say = say||"";
-    // Seed our random with the say text
-    seed = 1;
-    for (var i = 0; i < say.length; i++)
-        seed += 13 * say.charCodeAt(i);
-}
-    
-function seededRandom() {
-    var x = Math.sin(seed++) * 10000;
-    return x - Math.floor(x);
-}
-
-function getActionFromActionTemplate(action, say, audiotag, bob, character) {
-    var style = characterObject(character).style;
-    var hd = style.split("-")[0] == "hd";
-    if (say || audiotag) {
-        say = say||"";
-        say = say.replace(/&/g, "&amp;");
-        say = say.replace(/</g, "&lt;");
-        say = say.replace(/>/g, "&gt;"); 
-        say = say.replace(/'/g, "&apos;");
-        //console.log("seed="+seed+" bob="+bob);
-        // action: "<lookleft/><gestureleft/><cmd type='apogee'>+{max:5}+<lookuser/><handsbyside/>+{max:0,user:1}"
-        var a = action ? action.split("+") : (getActionTemplateFromTag("look-default", character) || "{max:0,user:1}").split("+");  // latter is the default Look At User (user=1 means character is looking at the user)
-        // e.g. a = ["{max:0,user:1}"]
-        //      a = ["<lookleft/><gestureleft/><cmd type='apogee'>", "{max:5}", "<lookuser/><handsbyside/>", "{max:0,user:1}"]
-        var b = splitSay(say); // e.g. ["this", "is", "a", "test"]
-        var j = 0; // index into b
-        var wordsSinceBlink = 0;
-        var s = "";
-        for (var i = 0; i < a.length; i++) {
-            if (a[i].substr(0,1) != '{') {
-                s += a[i]; // regular action commands
-            }
-            else {
-                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"').replace('hold','"hold":1'));
-                if (rec.silence) {
-                    s += '[silence ' + rec.silence + 'ms]';
-                    continue;
-                }                    
-                var c = rec.max;
-                // Case where there were no (or few) words - i.e. user used an audio file but neglected to give us a script, or an unusually short script - insert a pause
-                if (c > 0 && b.length <= 3)
-                    s += "<pause/>";
-                if (hd) {
-                    if (rec.user)
-                        s += '<fill name="speak1"/> ';
-                    // peel off up to max words (or all the words)
-                    while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
-                        s += b[j];  // add next word
-                        if (j < b.length - 1) { // if this is not the last word, add a space
-                            s += " ";
-                        }
-                        j++;
-                        c--;
-                    }
-                }
-                else {
-                    // peel off up to max words (or all the words)
-                    while (j < b.length && (c > 0 || rec.max == 0)) { // while there are words left and we have not exceeded our max, if any
-                        s += b[j];  // add next word
-                        if (j < b.length - 1) { // if this is not the last word, add a space OR a command
-                            if (!rec.user)
-                                s += " "; // there can be no head-bob here, e.g. head turned - and might as well not blink either
-                            else {
-                                if (bob && j < b.length - 5 && seededRandom() < 0.33) { // roughly 1/3 words get a bob, but not right towards the end
-                                    s += randomHead();
-                                }
-                                else if (wordsSinceBlink > 10) {
-                                    s += " <blink/> ";
-                                    wordsSinceBlink = 0;
-                                }
-                                else s += " ";
-                            }
-                        }
-                        wordsSinceBlink++;
-                        j++;
-                        c--;
-                    }
-                }
-            }
-        }
-        action = "<say>" + s + "</say>";
-    }
-    else {
-        // Case where user has no script or audio tag - just an action - now we need to interpret our tags a bit differently
-        var a = action ? action.split("+") : [];
-        var s = "";
-        for (var i = 0; i < a.length; i++) {
-            if (a[i].substr(0,1) != '{') {
-                s += a[i]; // regular action commands
-            }
-            else {
-                var rec = JSON.parse(a[i].replace('max','"max"').replace('user','"user"').replace('silence','"silence"').replace('hold','"hold":1'));
-                if (rec.max) s += "<pause/>"; // this is what we had before our switch to +{}+ commands
-            }
-        }
-        action = s;
-    }
-    return action;
-}
-
-function splitSay(say) {
-    // like say.split(" ") but [] count as one word
-    var a = [];
-    var p1 = say.indexOf("[");
-    while (p1 != -1) {
-        var p2 = say.indexOf("]", p1);
-        a = a.concat(say.substr(0, p1).split(" "));
-        a.push(say.substr(p1, p2-p1+1));
-        say = say.substr(p2+1);
-        p1 = say.indexOf("[");
-    }
-    a = a.concat(say.split(" "));
-    return a;
-}
-
-function randomHead() {
-    var n = (1+Math.floor(seededRandom()*4));
-    if (n == 3) return " <headnormal/> "
-    else return " <headrandom"+n+"/> ";
-}
 
 app.listen(3000, function() {
   console.log('Listening on port 3000');
