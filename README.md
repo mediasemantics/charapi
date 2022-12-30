@@ -15,7 +15,7 @@ setting up an AWS EC2 instance using Apache and Node.js.
 
 ## Obtaining keys
 Use this [AWS Markeplace](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ) page to add the
-Character API service to your AWS account. You will receive codes by email that you will insert in the server.js file. You will be charged $0.007 per call to the Character API. There are no monthly minimums. 
+Character API service to your AWS account. You will receive credentials by email to log onto your API dashboard. There you will generate an API key that you will insert in the server.js file. You will be charged $0.007 per call to the Character API. There are no monthly minimums. 
 Charges will appear on your monthly AWS bill. The Character API access key is the 8-digit key that is mailed to you when you add the Character API to your AWS account. 
 
 This sample uses the Amazon Polly Text-to-Speech API, which is also priced based on usage. 
@@ -48,7 +48,7 @@ Modify the server.js file to add your Character API and AWS Polly access credent
 ```
 nano server.js
 ```
-Replace 'xxxxxxxx' with the 8 digit key that was mailed to you when you signed up for the Character API.
+Replace 'xxxxxxxxxxxxxxxxxxxxxxxxx' with the 25 character API Key from the API Dashboard.
 
 Replace 'xxxxxxxxxxxxxxxxxxxx' and 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' with the values obtained when you created the 'polly' IAM user.
 

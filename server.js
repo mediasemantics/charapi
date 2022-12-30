@@ -8,7 +8,7 @@ var lockFile = require('lockfile');
 
 
 // TODO set up your Character API key here
-var charAPIKey = "xxxxxxxx";
+var charAPIKey = "xxxxxxxxxxxxxxxxxxxxxxxxx";
 
 var polly = new AWS.Polly({
   region: 'us-east-1',
