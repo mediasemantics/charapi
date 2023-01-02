@@ -61,7 +61,6 @@ function CharApiClient(divid, params) {
     var playCur = null;         // Currently playing playQueue item, or null
     var playShield = false;     // true if play shield is up
     var idleType = "normal";
-    var bobType = "normal";
     var saveState = false;
     var clientScale = 1;
     var idleData = null;
@@ -72,7 +71,6 @@ function CharApiClient(divid, params) {
         playCur = null;
         playShield = false;
         idleType = "normal";
-        bobType = "normal";
         saveState = false;
         clientScale = 1;
         idleData = null;
@@ -94,7 +92,6 @@ function CharApiClient(divid, params) {
         if (typeof params.fade === "boolean") fade = params.fade;
         if (typeof params.playShield === "boolean") playShield = params.playShield; // effectively forces autoplay
         if (typeof params.idleType === "string") idleType = params.idleType; // "none"/"blink"/"normal"
-        if (typeof params.bobType === "string") bobType = params.bobType; // "none"/"normal"
         if (typeof params.saveState === "boolean") saveState = params.saveState; // initial state of 2nd dynamicPlay is the final state of the previous one
         if (typeof params.idleData === "object") idleData = params.idleData; // get this from the catalog - tells us how to idle this character
         if (typeof params.clientScale === "number") clientScale = params.clientScale; // use this to tell the client to further scale the server image by the given factor. Use with raster characters.
@@ -244,7 +241,7 @@ function CharApiClient(divid, params) {
         var url = params.endpoint;
         // Additional parameters from the caller, e.g. character
         for (var key in params) {
-            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "bobType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState" && key != "idleData" && key != "clientScale") // minus the parameters for charapiclient
+            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState" && key != "idleData" && key != "clientScale") // minus the parameters for charapiclient
                 url += (url.indexOf("?") == -1 ? "?" : "&") + key + "=" + encodeURIComponent(params[key]);
         }
         // Additional params added by charapiclient.js, e.g. texture, with
@@ -367,7 +364,6 @@ function CharApiClient(divid, params) {
         if (saveState) addedParams += "&initialstate=" + initialState;
         addedParams = addedParams + '&do=' + (tag||"");
         addedParams = addedParams + '&say=' + encodeURIComponent(say||"");
-        if (bobType == "none") addedParams = addedParams + '&bob=false';
 
         if (say && containsActualSpeech(say)) {
             if (audio && lipsync)
@@ -526,9 +522,9 @@ function CharApiClient(divid, params) {
             secondaryTextures[key] = new Image();
             secondaryTextures[key].crossOrigin = "Anonymous";
             secondaryTextures[key].onload = function () {
-                
+				
                 // populate idle cache
-                if (addedParams.indexOf("&idle=") != -1 || key.indexOf("RandomRight") != -1)
+                if (addedParams.indexOf("&idle=") != -1)
                     idleCache[textureURL] = secondaryTextures[key];
                 // load some more
                 loadSecondaryTextures(addedParams, startAudio);
@@ -788,16 +784,16 @@ function CharApiClient(divid, params) {
         }
         if (loading || animating)
             stopping = true;
+		if (delayTimeout) {
+            clearTimeout(delayTimeout);
+            delayTimeout = 0;
+		}
         if (settleTimeout) {
             clearTimeout(settleTimeout);
             settleTimeout = 0;
             animating = false;
             animateComplete();
         }
-		if (delayTimeout) {
-            clearTimeout(delayTimeout);
-            delayTimeout = 0;
-		}
     }
 
     function animateFailed() {
