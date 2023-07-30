@@ -1,5 +1,5 @@
 # Media Semantics Character API Reference Implementation
-HTML 5 Talking Avatar using Character API and AWS Polly
+HTML 5 Talking Avatar using Character API and AWS Polly.
 
 ## Overview
 This is the Reference Implementation for the [Character API](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ), a cloud-based Character Animation API available on the Amazon AWS Marketplace.
@@ -9,14 +9,13 @@ For a detailed introduction to the Character API, please read the [Character API
 You can see the Reference Implementation running [here](https://mediasemantics.com/charapiclient.html). 
 
 ## Requirements
-This README assumes that you are able to view html pages using a local web server (i.e. using a url that begins with http://localhost) and that you are able to run Node.js. 
-If you prefer, you can also install it directly on a web server. Please see this [tutorial](https://www.mediasemantics.com/apitutorial2.html) for tips on
-setting up an AWS EC2 instance using Apache and Node.js.
+This ReadMe describes how to install the project on your local machine. It works on Mac and Windows, but you must have NodeJS installed.
+If you prefer, you can also install the server portion directly on a web server. Please see this [tutorial](https://www.mediasemantics.com/apitutorial2.html) for tips on setting up an AWS EC2 instance using Apache and Node.js.
 
 ## Obtaining keys
 Use this [AWS Markeplace](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ) page to add the
 Character API service to your AWS account. You will receive credentials by email to log onto your API dashboard. There you will generate an API key that you will insert in the server.js file. You will be charged $0.007 per call to the Character API. There are no monthly minimums. 
-Charges will appear on your monthly AWS bill. The Character API access key is the 8-digit key that is mailed to you when you add the Character API to your AWS account. 
+Charges will appear on your monthly AWS bill. 
 
 This sample uses the Amazon Polly Text-to-Speech API, which is also priced based on usage. 
 Since this sample caches the API results, API fees are only incurred for text that has not already been seen, so your actual spend depends on your traffic and on the effectiveness of the cache.
@@ -44,10 +43,8 @@ Create a cache subdirectory:
 mkdir cache
 ```
 
-Modify the server.js file to add your Character API and AWS Polly access credentials.
-```
-nano server.js
-```
+Next, modify the server.js file to add your Character API and AWS Polly access credentials.
+
 Replace 'xxxxxxxxxxxxxxxxxxxxxxxxx' with the 25 character API Key from the API Dashboard.
 
 Replace 'xxxxxxxxxxxxxxxxxxxx' and 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' with the values obtained when you created the 'polly' IAM user.
@@ -62,11 +59,23 @@ You should see "Listening on port 3000".
 
 You can verify that the caching server app is working by viewing this URL from a web browser:
 ```
-http://localhost:3000/animate
+http://localhost:3000/animate?character=SusanHead&version=3.0
 ```
-You should see an image appear.
+You should see a strange image appear (it is a texture map, and is not meant to be displayed directly.)
 
-Finally, load charapiclient.html into a web browser using the appropriate http://localhost url (the sample will not run using a file url).
+Next, you can move the file html/charapiclient.html to your web directory and run it in a web browser using the appropriate http://localhost url. 
+
+Or you can use the following steps to run the file in a local web server:
+
+In a new command line window:
+```
+npm install -g http-server
+cd ~/charapi/html
+http-server . -p 3001
+```
+Then point your browser to: http://localhost:3001/charapiclient.html
+
+
 
 ## How it works
 

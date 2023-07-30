@@ -95,6 +95,8 @@ function CharApiClient(divid, params) {
         if (typeof params.saveState === "boolean") saveState = params.saveState; // initial state of 2nd dynamicPlay is the final state of the previous one
         if (typeof params.idleData === "object") idleData = params.idleData; // get this from the catalog - tells us how to idle this character
         if (typeof params.clientScale === "number") clientScale = params.clientScale; // use this to tell the client to further scale the server image by the given factor. Use with raster characters.
+        if (typeof params.model === "object") model = params.model; // can provide your own 3d model
+        if (typeof params.displayDensity === "number") displayDensity = params.displayDensity; // for 3d only
 
         setupScene();
         if (playShield) setupPlayShield(params.width, params.height);
@@ -105,13 +107,19 @@ function CharApiClient(divid, params) {
         var div = document.getElementById(divid);
         var cx = params.width;
         var cy = params.height;
-        var cxMax = cx;
-        var cyMax = cy;
-        var cxMax2 = cxMax * clientScale;
-        var cyMax2 = cyMax * clientScale;
+        var cx2 = cx * clientScale;
+        var cy2 = cy * clientScale;
+        var scale = 1;
+        if (displayDensity) {
+            cx *= displayDensity;
+            cy *= displayDensity;
+            cx2 *= displayDensity;
+            cy2 *= displayDensity;
+            scale = 1/displayDensity;
+        }
         var s = '';
-        s += '<div id="' + divid + '-top' + '" style="visibility:hidden; width:' + cx + 'px; height:' + cy + 'px; position:relative; overflow: hidden;">';
-        s += '  <canvas id="' + divid + '-canvas" width="' + cxMax + '" height="' + cyMax + '" style="position:absolute; top:0px; left:0px; width:' + cxMax2 + 'px; height:' + cyMax2 + 'px; "></canvas>';
+        s += '<div id="' + divid + '-top' + '" style="visibility:hidden; width:' + cx + 'px; height:' + cy + 'px; position:relative; overflow: hidden; transform:scale(' + scale + '); transform-origin: top left;">';
+        s += '  <canvas id="' + divid + '-canvas" width="' + cx + '" height="' + cy + '" style="position:absolute; top:0px; left:0px; width:' + cx2 + 'px; height:' + cy2 + 'px;"></canvas>';
         if (playShield)
             s += '  <canvas id="' + divid + '-playshield-canvas" style="position:absolute; left:0px; top:0px;" width="' + cx +'px" height="' + cy + 'px"/></canvas>';
         if (!audioContext)
@@ -236,12 +244,19 @@ function CharApiClient(divid, params) {
         document.getElementById(divid).dispatchEvent(e);
     }
 
+    function showTranscript() {
+        if (stagedTranscript) {
+            document.getElementById(divid).dispatchEvent(createEvent("closedCaption", transcriptFromText(stagedTranscript)));
+            stagedTranscript = undefined;
+        }
+    }
+
     function makeGetURL(addedParams) { // addedParams starts with & if truthy
         // Caller-supplied endpoint
         var url = params.endpoint;
         // Additional parameters from the caller, e.g. character
         for (var key in params) {
-            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState" && key != "idleData" && key != "clientScale") // minus the parameters for charapiclient
+            if (key && key != "endpoint" && key != "fade" && key != "idleType" && key != "autoplay" && key != "playShield" && key != "preload" && key != "saveState" && key != "idleData" && key != "clientScale" && key != "model" && key != "displayDensity") // minus the parameters for charapiclient
                 url += (url.indexOf("?") == -1 ? "?" : "&") + key + "=" + encodeURIComponent(params[key]);
         }
         // Additional params added by charapiclient.js, e.g. texture, with
@@ -298,12 +313,22 @@ function CharApiClient(divid, params) {
     var preload = true;         // Master switch (a param normally)
     var preloaded = [];         // list of things we already pulled on
     var preloadQueue = [];      // de-duped list of urls to pull on
-    var preloading = false;     // url being preloaded
+    var preloading = null;     // url being preloaded
     var preloadTimeout = null;  // defined if a preload timeout is outstanding
 
     // HD characters
     var canvasTransformSrc = [];
     var canvasTransformDst = [];
+
+    // 3D characters
+    var scene;
+    var renderer;
+    var camera;
+    var model;
+    var displayDensity;
+
+    // Misc
+    var stagedTranscript;
     
     function resetInnerVars() {
         gainNode = null;
@@ -341,8 +366,13 @@ function CharApiClient(divid, params) {
         preload = true;
         preloaded = [];
         preloadQueue = [];
-        preloading = false;
+        preloading = null;
         preloadTimeout = null;
+        
+        scene = null;
+        renderer = null;
+        camera = null;
+        model = null;
     }
 
     function execute(tag, say, audio, lipsync, idle, callback) {
@@ -350,6 +380,8 @@ function CharApiClient(divid, params) {
             console.log("internal error"); // execute called on a character while animating that character
             return;
         }
+
+        if (say) stageTranscript(transcriptFromText(say));
 
         executeCallback = callback;
 
@@ -384,6 +416,21 @@ function CharApiClient(divid, params) {
         return hasNonWhitespace;
     }
     
+    function stageTranscript(text) {
+        stagedTranscript = text;
+    }
+
+    function transcriptFromText(s) {
+        // Filter out tags - adjust for extra space, remove [spoken]...[/spoken] leave [written]...[/written] contents.
+        if (typeof(s) == "string") {
+            s = s.replace(/\[written\](.*?)\[\/written\]/g, "$1");
+            s = s.replace(/\[spoken\].*?\[\/spoken\]/g, "");
+            s = s.replace(/\[[^\[]*\]/g, function(x) {return ""});
+            s = s.trim().replace(/  /g, " ");
+        }
+        return s;
+    }
+
     function speakRecorded(addedParams, audioURL, lipsync) {
         addedParams = addedParams + '&lipsync=' +  encodeURIComponent(lipsync);
         // load the audio, but hold it
@@ -427,7 +474,7 @@ function CharApiClient(divid, params) {
                     if (preloaded.indexOf(audioURL) == -1) preloaded.push(audioURL);
                     loadAnimation(addedParams, true, false);
                 }, function (e) {
-                    animateFailed(who);
+                    animateFailed();
                 });
             };
             xhr.onerror = function() {animateFailed();}
@@ -467,6 +514,22 @@ function CharApiClient(divid, params) {
                 animData = JSON.parse(xhr.response);
             } catch(e) {animateFailed();}
 
+            // 3d model case
+            if (animData.targets) {
+                if (!model) {
+                    if (typeof THREE != "object") return console.error("Missing three.js");
+                    if (typeof THREE.GLTFLoader != "function") return console.error("Missing GLTFLoader.js");
+                    var glbURL = makeGetURL(addedParams + "&type=model").replace("format=png","format=glb").replace("format=jpeg","format=glb");
+                    var loader = new THREE.GLTFLoader();
+                    loader.load(glbURL, function(gltf) {model = gltf.scene; setup3d(); getItStarted(startAudio);}, undefined, function(error) {console.error(error);});
+                    return;
+                }
+                else { // case where caller provides it's own model via 'model' parameter
+                    setup3d();
+                    return getItStarted(startAudio);
+                }
+            }
+            
             // Load the image
             texture = new Image();
             texture.crossOrigin = "Anonymous";
@@ -522,7 +585,7 @@ function CharApiClient(divid, params) {
             secondaryTextures[key] = new Image();
             secondaryTextures[key].crossOrigin = "Anonymous";
             secondaryTextures[key].onload = function () {
-				
+                
                 // populate idle cache
                 if (addedParams.indexOf("&idle=") != -1)
                     idleCache[textureURL] = secondaryTextures[key];
@@ -567,17 +630,19 @@ function CharApiClient(divid, params) {
         var xhr = new XMLHttpRequest();
         xhr.open("GET", preloading, true);
         xhr.onload = function() {
-            if (preloaded.indexOf(preloading) == -1)
-                preloaded.push(preloading);
-            // if this was animation data, then also find secondary textures
-            if (preloading.indexOf("&type=data") != -1) {
-                var animDataPreload = JSON.parse(xhr.response);
-                for (var i = 0; i < animDataPreload.textures.length; i++) {
-                    if (animDataPreload.textures[i] != "default")
-                        preloadHelper(makeGetURL("&texture=" + animDataPreload.textures[i] + "&type=image"));
+            if (preloading) {
+                if (preloaded.indexOf(preloading) == -1)
+                    preloaded.push(preloading);
+                // if this was animation data, then also find secondary textures
+                if (preloading.indexOf("&type=data") != -1) {
+                    var animDataPreload = JSON.parse(xhr.response);
+                    for (var i = 0; i < (animDataPreload.textures||[]).length; i++) {
+                        if (animDataPreload.textures[i] != "default")
+                            preloadHelper(makeGetURL("&texture=" + animDataPreload.textures[i] + "&type=image"));
+                    }
                 }
+                preloading = null;
             }
-            preloading = null;
             // restart in a bit
             if (preloadQueue.length > 0)
                 preloadTimeout = setTimeout(preloadSomeMore, 500);
@@ -588,6 +653,12 @@ function CharApiClient(divid, params) {
     function getItStarted(startAudio) {
         // render the first frame and start animation loop
         loading = false;
+        showTranscript();
+		// case where we are stopping before we got started
+		if (stopping) {
+		    animateComplete();
+    		return;
+		}
         animating = true;
 
         // Settling feature - establish a minimum time between successive animations - mostly to prevent back to back audio - because we are so good at preloading
@@ -607,7 +678,7 @@ function CharApiClient(divid, params) {
     }
 
     function getItStartedCheckDelay(startAudio) {
-		if (delayTimeout) {clearTimeout(delayTimeout); delayTimeout = 0;}
+        if (delayTimeout) {clearTimeout(delayTimeout); delayTimeout = 0;}
         if (animData.leadingSilence && startAudio) {
             delayTimeout = setTimeout(onDelayComplete, animData.leadingSilence);
             getItStartedActual(false);
@@ -693,7 +764,8 @@ function CharApiClient(divid, params) {
                         }
 
                         var canvas = document.getElementById(divid + "-canvas");
-                        if (canvas) {
+                        // 2D
+                        if (canvas && !renderer) {
                             var ctx = canvas.getContext("2d");
                             ctx.clearRect(0, 0, canvas.width, canvas.height);
                             if (animData.recipes) {
@@ -747,21 +819,70 @@ function CharApiClient(divid, params) {
                             else {
                                 ctx.drawImage(texture, 0, 0, params.width, params.height, 0, 0, params.width, params.height);
                             }
-
-                            // third arg is an extensible side-effect string that is triggered when a given frame is reached
-                            if (animData.frames[frame][2])
-                                onEmbeddedCommand(animData.frames[frame][2]);
-                            // second arg is -1 if this is the last frame to show, or a recovery frame to go to if stopping early
-                            var recoveryFrame = animData.frames[frame][1];
-                            if (recoveryFrame == -1)
-                                frame = -1;
-                            else if (stopping && recoveryFrame)
-                                recovery = {frame:recoveryFrame, time:timestamp};
                         }
+                        // 3D
+                        if (canvas && renderer) {
+                            if (animData.recipes) {
+                                var recipe = animData.recipes[framerec[0]];
+                                var mesh = null;
+                                model.traverse(o => {
+                                    if (o.type == "SkinnedMesh")
+                                        mesh = o;
+                                });
+                                if (mesh) mesh.updateMorphTargets();
+                                for (var i = 0; i < recipe.length; i++) {
+                                    var name = animData.targets[recipe[i][0]];
+                                    if (recipe[i].length == 2) { // morph target
+                                        if (mesh) {
+                                            for (var j = 0; j < mesh.userData.targetNames.length; j++) {
+                                                if (mesh.userData.targetNames[j] == name) {
+                                                    mesh.morphTargetInfluences[j] = recipe[i][1];
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else { // bone target
+                                        var bone = null;
+                                        model.traverse(o => {
+                                            if (o.isBone && o.name === name)
+                                                bone = o;
+                                        });
+                                        if (bone) {
+                                            bone.rotation.x = THREE.Math.degToRad(recipe[i][1]);
+                                            bone.rotation.y = THREE.Math.degToRad(recipe[i][2]);
+                                            bone.rotation.z = THREE.Math.degToRad(recipe[i][3]);
+                                            if (recipe[i][4] !== undefined) {
+                                                bone.position.x = recipe[i][4];
+                                                bone.position.y = recipe[i][5];
+                                                bone.position.z = recipe[i][6];
+                                            }
+                                            if (recipe[i][7] !== undefined) {
+                                                bone.scale.x = recipe[i][7];
+                                                bone.scale.y = recipe[i][8];
+                                                bone.scale.z = recipe[i][9];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            renderer.render(scene, camera);
+                        }
+
+                        // third arg is an extensible side-effect string that is triggered when a given frame is reached
+                        if (animData.frames[frame][2])
+                            onEmbeddedCommand(animData.frames[frame][2]);
+                        // second arg is -1 if this is the last frame to show, or a recovery frame to go to if stopping early
+                        var recoveryFrame = animData.frames[frame][1];
+                        if (recoveryFrame == -1)
+                            frame = -1;
+                        else if (stopping && recoveryFrame)
+                            recovery = {frame:recoveryFrame, time:timestamp};
                     }
                 }
             }
         }
+
         if (raf) rafid = requestAnimationFrame(animate);
         if (completed) {
             animating = false;
@@ -784,10 +905,10 @@ function CharApiClient(divid, params) {
         }
         if (loading || animating)
             stopping = true;
-		if (delayTimeout) {
+        if (delayTimeout) {
             clearTimeout(delayTimeout);
             delayTimeout = 0;
-		}
+        }
         if (settleTimeout) {
             clearTimeout(settleTimeout);
             settleTimeout = 0;
@@ -870,16 +991,16 @@ function CharApiClient(divid, params) {
             canvasTransformSrc[process-1].width = width;
             canvasTransformSrc[process-1].height = height;
         }
-        canvasTransformSrc[process-1].getContext('2d').clearRect(0, 0, width, height);
-        canvasTransformSrc[process-1].getContext('2d').drawImage(src, recipe[i][2], recipe[i][3], width, height, 0, 0, width, height);
-        var source = canvasTransformSrc[process-1].getContext('2d').getImageData(0, 0, width, height);
+        canvasTransformSrc[process-1].getContext('2d', {willReadFrequently:true}).clearRect(0, 0, width, height);
+        canvasTransformSrc[process-1].getContext('2d', {willReadFrequently:true}).drawImage(src, recipe[i][2], recipe[i][3], width, height, 0, 0, width, height);
+        var source = canvasTransformSrc[process-1].getContext('2d', {willReadFrequently:true}).getImageData(0, 0, width, height);
         // Get the bits for a same-size region
         if (!canvasTransformDst[process-1]) {
             canvasTransformDst[process-1] = document.createElement('canvas');
             canvasTransformDst[process-1].width = width;
             canvasTransformDst[process-1].height = height;
         }
-        var target = canvasTransformSrc[process-1].getContext('2d').createImageData(width, height);
+        var target = canvasTransformSrc[process-1].getContext('2d', {willReadFrequently:true}).createImageData(width, height);
         // Return the image displacement
         var deltax = 0;
         var deltay = 0;
@@ -1029,6 +1150,48 @@ function CharApiClient(divid, params) {
         }
     }
 
+    //
+    // 3D
+    //
+    
+    function setup3d() {
+        scene = new THREE.Scene();
+        
+        var canvas = document.getElementById(divid + "-canvas");
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 2000);
+        // You can use this event to override the 3d settings
+        let e = createEvent("setup3d", {scene:scene, camera:camera, model:model});
+        document.getElementById(divid).dispatchEvent(e);
+        if (!e.defaultPrevented) {
+            // Adjust model scale and position
+            model.scale.set(animData.modelScale, animData.modelScale, animData.modelScale);
+            model.position.y = animData.modelPosY;
+            // Adjust camera position
+            camera.position.x = 0;
+            camera.position.y = animData.cameraPosY;
+            camera.position.z = animData.cameraPosZ;
+            camera.rotation.x = THREE.Math.degToRad(animData.cameraRotX);
+            // Add lighting
+            var light = new THREE.AmbientLight( Number("0x"+animData.ambientColor), animData.ambientIntensity );
+            scene.add(light);
+            light = new THREE.DirectionalLight(Number("0x"+animData.light1Color), animData.light1Intensity );
+            light.position.set(0, 0, 10);            
+            scene.add(light);
+            light = new THREE.DirectionalLight(Number("0x"+animData.light2Color), animData.light2Intensity );
+            light.position.set(-10, 0, 0);            
+            scene.add(light);
+            light = new THREE.DirectionalLight(Number("0x"+animData.light3Color), animData.light3Intensity );
+            light.position.set(10, 0, 0);            
+            scene.add(light);
+        }
+        scene.add(model);
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+        camera.aspect = canvas.clientWidth / canvas.clientHeight;
+        camera.updateProjectionMatrix();
+    }
+    
     //
     // Idle
     //
@@ -1212,14 +1375,14 @@ function CharApiClient(divid, params) {
     // Misc
     //
 
-    function createEvent(s) {
+    function createEvent(s, o) {
         if(typeof(Event) === 'function') {
-            return new Event(s);
-        }
+            return new CustomEvent(s, {detail:o, cancelable:true});
+        } 
         else {
             // For IE
             var event = document.createEvent('Event');
-            event.initEvent(s, true, true);
+            event.initCustomEvent(s, false, false, o);
             return event;
         }
     }

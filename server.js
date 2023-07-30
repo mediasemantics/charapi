@@ -6,7 +6,6 @@ var AWS = require('aws-sdk');
 var zlib = require('zlib');
 var lockFile = require('lockfile');
 
-
 // TODO set up your Character API key here
 var charAPIKey = "xxxxxxxxxxxxxxxxxxxxxxxxx";
 
@@ -36,10 +35,9 @@ var catalog = null;
 var catalogTimestamp = null;
 var CATALOG_TTL = 60 * 60 * 1000; // 1 hour
 
-        
 app.get('/animate', function(req, res, next) {
     console.log("animate");
-    if (req.query.type != "audio" && req.query.type != "image" && req.query.type != "data") req.query.type = "image"; // default to image
+    if (req.query.type != "audio" && req.query.type != "image" && req.query.type != "model" && req.query.type != "data") req.query.type = "image"; // default to image
 
     loadCatalogIfNecessary(function(e){
         if (e) return next(e);
@@ -57,6 +55,8 @@ app.get('/animate', function(req, res, next) {
         var charstyleobj = characterStyleObject(charobj.style);
         var width = req.query.width || charstyleobj.naturalWidth;
         var height = req.query.height || charstyleobj.naturalHeight;
+        var density = req.query.density || "1";
+        var charscale = req.query.charscale || "1";
         var format = req.query.format || (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
         
         // Determine an appropriate voice for your character - or you can fix it here instead
@@ -74,6 +74,8 @@ app.get('/animate', function(req, res, next) {
             "format":format,
             "width":width.toString(),
             "height":height.toString(),
+            "density":density,
+            "charscale":charscale,
             "charx":"0",
             "chary":"0",
             "fps":"24",
@@ -90,6 +92,7 @@ app.get('/animate', function(req, res, next) {
         if (req.query.chary) o.chary = req.query.chary.toString();
         if (req.query.lipsync) o.lipsync = req.query.lipsync;
         if (req.query.initialstate) o.initialstate = req.query.initialstate;
+        if (req.query.return) o.return = req.query.return;        
 
         // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
         // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
@@ -109,9 +112,10 @@ app.get('/animate', function(req, res, next) {
         hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
         if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes, to defeat browser caching
         var filebase = hash.digest("hex");
-        var type = req.query.type;                          // This is the type of file actually requested - audio, image, or data
+        var type = req.query.type;                          // This is the type of file actually requested - audio, image, model, or data
         var format = o.format;                              // "png" or "jpeg"
 
+        // NOTE: A more scaleable implementation, optimized for load balancers, would use redis and ioredis-lock.
         lockFile.lock(targetFile(filebase, "lock"), {}, function() {
             let file = targetFile(filebase, type, format);
             fs.exists(file, function(exists) {
@@ -120,7 +124,7 @@ app.get('/animate', function(req, res, next) {
                         // "touch" each file we return - you can use a cron to delete files older than a certain age
                         let time = new Date();
                         fs.utimes(file, time, time, () => { 
-                            finish(req, res, filebase, type, o.format);
+                            finishAnimate(req, res, filebase, type, o.format);
                         });
                     });
                 }
@@ -139,11 +143,11 @@ app.get('/animate', function(req, res, next) {
                             console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
                             if (err) return next(new Error(body));
                             if (httpResponse.statusCode >= 400) return next(new Error(body));
-                            fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
+                            fs.writeFile(targetFile(filebase, type, o.format), body, "binary", function(err) {
                                 if (o.texture) {
                                     // texture requests don't have associated data, so we are done
                                     lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                        finish(req, res, filebase, type, o.format);
+                                        finishAnimate(req, res, filebase, type, o.format);
                                     });
                                 }
                                 else {
@@ -151,7 +155,7 @@ app.get('/animate', function(req, res, next) {
                                     zlib.unzip(buffer, function (err, buffer) {
                                         fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
                                             lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                                finish(req, res, filebase, type, o.format);
+                                                finishAnimate(req, res, filebase, type, o.format);
                                             });
                                         });
                                     });
@@ -187,7 +191,7 @@ app.get('/animate', function(req, res, next) {
                                             fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
                                                 if (err) return next(new Error(err.message));
                                                 lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                                    finish(req, res, filebase, type, o.format);
+                                                    finishAnimate(req, res, filebase, type, o.format);
                                                 });
                                             });
                                         });
@@ -291,6 +295,7 @@ function doParallelTTS(textOnly, voice, callback) {
 function targetFile(filebase, type, format) {
     if (type == "audio") return cachePrefix + filebase + ".mp3";
     else if (type == "image") return cachePrefix + filebase + "." + format;
+    else if (type == "model") return cachePrefix + filebase + ".glb";
     else if (type == "data") return cachePrefix + filebase + ".json";
     else if (type == "lock") return cachePrefix + filebase + ".lock";
 }
@@ -298,16 +303,18 @@ function targetFile(filebase, type, format) {
 function targetMime(type, format) {
     if (type == "audio") return "audio/mp3";
     else if (type == "image") return "image/" + format;
+    else if (type == "model") return "model/gltf-binary";
     else if (type == "data") return "application/json; charset=utf-8";
 }
 
-function finish(req, res, filebase, type, format) {
+function finishAnimate(req, res, filebase, type, format) {
 	var frstream = fs.createReadStream(targetFile(filebase, type, format));
 	res.statusCode = "200";
     
-    if ((req.get("Origin") || "").indexOf("localhost") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));
-    // TODO: IMPORTANT: Uncomment and fill in your domain here for CORS protection
-    //else if ((req.get("Origin")||"").indexOf("yourdomain.com") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));*/
+    res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));  // This line removes all CORS protection!
+    // TODO: IMPORTANT: Remove line above and uncomment lines below, filling in your domain, for CORS protection
+    //if ((req.get("Origin")||"").indexOf("localhost") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin")); // allow testing on localhost
+    //else if ((req.get("Origin")||"").indexOf("yourdomain.com") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));
     res.setHeader('Vary', 'Origin');
 	res.setHeader('Cache-Control', 'max-age=31536000, public'); // 1 year (long!)
 	res.setHeader('content-type', targetMime(type, format));
