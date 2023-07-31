@@ -311,7 +311,7 @@ function finishAnimate(req, res, filebase, type, format) {
 	var frstream = fs.createReadStream(targetFile(filebase, type, format));
 	res.statusCode = "200";
     
-    res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));  // This line removes all CORS protection!
+    if (req.get("Origin")) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));  // This line removes all CORS protection!
     // TODO: IMPORTANT: Remove line above and uncomment lines below, filling in your domain, for CORS protection
     //if ((req.get("Origin")||"").indexOf("localhost") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin")); // allow testing on localhost
     //else if ((req.get("Origin")||"").indexOf("yourdomain.com") != -1) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));
