@@ -38,18 +38,14 @@ Install the required dependencies:
 npm install
 ```
 
-Create a cache subdirectory:
+Copy the .env.sample to .env and fill in the missing Character API and AWS Polly access credentials.
+
 ```
-mkdir cache
+CHARAPI_KEY is the 25 character API Key from the API Dashboard.
+AWS_VOICE_KEY and AWS_VOICE_SECRET are the values obtained when you created the 'polly' IAM user.
 ```
-
-Next, modify the server.js file to add your Character API and AWS Polly access credentials.
-
-Replace 'xxxxxxxxxxxxxxxxxxxxxxxxx' with the 25 character API Key from the API Dashboard.
-
-Replace 'xxxxxxxxxxxxxxxxxxxx' and 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' with the values obtained when you created the 'polly' IAM user.
-
 Save your changes.
+
 
 You can now start the server with:
 ```

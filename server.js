@@ -5,35 +5,42 @@ var request = require('request');
 var AWS = require('aws-sdk');
 var zlib = require('zlib');
 var lockFile = require('lockfile');
-
-// TODO set up your Character API key here
-var charAPIKey = "xxxxxxxxxxxxxxxxxxxxxxxxx";
-
-var polly = new AWS.Polly({
-  region: 'us-east-1',
-  maxRetries: 3,
-  accessKeyId: 'xxxxxxxxxxxxxxxxxxxx',
-  secretAccessKey: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-  timeout: 15000
+//read in the values from .env
+const dotenv = require('dotenv');
+dotenv.config();
+// The Character/Voice API endpoints and keys
+let urlCatalog = process.env.CATALOGUE_URL;
+let urlAnimate = process.env.ANIMATE_URL;
+const charAPIKey = process.env.CHARAPI_KEY;
+const polly = new AWS.Polly({
+    region: 'us-east-1',
+    maxRetries: 3,
+    accessKeyId: process.env.AWS_VOICE_KEY,
+    secretAccessKey: process.env.AWS_VOICE_SECRET,
+    timeout: 15000
 });
-
-// TODO set the path to your cache directory, and make sure to give it read/write permission, e.g. mkdir cache && sudo chgrp apache cache && sudo chmod g+w cache
-var cachePrefix = "./cache/";
+//port and cache settings
+const port = process.env.APP_PORT
+const cache = process.env.APP_CACHE || 'cache'
+const cacheAbsolute = process.env.APP_CACHE_ABSOLUTE || false
+let fullCachePrefix = '';
+if(cacheAbsolute){
+    fullCachePrefix = __dirname+'/'+cache+'/'
+}else{
+    fullCachePrefix = cache+'/'
+}
+const cachePrefix =  fullCachePrefix
 
 // Set up express
 var app = express();
 app.use(bodyParser.json({limit: '1mb'}));
 app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
-// The Character API endpoints
-
-var urlCatalog = "http://api.mediasemantics.com/catalog";
-var urlAnimate = "http://api.mediasemantics.com/animate";
-
 // The animation catalog
 var catalog = null;
 var catalogTimestamp = null;
 var CATALOG_TTL = 60 * 60 * 1000; // 1 hour
+
 
 app.get('/animate', function(req, res, next) {
     console.log("animate");
@@ -436,7 +443,8 @@ function characterObject(id) {
     return null;
 }
 
-
-app.listen(3000, function() {
-  console.log('Listening on port 3000');
-});
+app.listen(port, function () {
+    console.log('Server running at '+process.env.APP_URL)
+    console.log('Listening on port '+port);
+    console.log('Cache '+cachePrefix);
+})
