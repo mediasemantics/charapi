@@ -64,6 +64,7 @@ function CharApiClient(divid, params) {
     var saveState = false;
     var clientScale = 1;
     var idleData = null;
+    var fpsInterval, now, then, elapsed; // used in animate
 
     function resetOuterVars() {
         fade = true;
@@ -288,10 +289,9 @@ function CharApiClient(divid, params) {
     var loaded;                     // True if default frame is loaded for a given character
     var loading;                    // True if we are loading a new animation - does not overlap animating
     var animating;                  // True if a character is animating
-    var startTime;                  // Time when a character's animation started
     var frame;                      // Current frame of animation
     var stopping;                   // True if we are stopping an animation - overlaps animating
-    var recovery;                   // A {frame, time} object if recovering from a stop
+    var starting;                   // True if we are starting an animation - overlaps animating
     var executeCallback;            // What to call on execute() return, i.e. when entire animation is complete
     var rafid;                      // Defined only when at least one character is animating - otherwise we stop the RAF (game) loop
     var atLeastOneLoadError;        // We use this to stop idle after first load error
@@ -319,14 +319,22 @@ function CharApiClient(divid, params) {
     // HD characters
     var canvasTransformSrc = [];
     var canvasTransformDst = [];
-
+    var sway = 0;               // if swaying, actual sway angle
+    var swayTime;               // time of last sway frame
+    var swayTarget;             // target angle in radians
+    var swayAccel;              // proportion of distance from sway to swayTarget    
+    var breath = 0;             // if breathing, actual (max) shoulder displacement
+    var breathTime = 0;         // used to compute breath
+    var random = undefined;     // random walk controllers
+    var suppressRandom = false;
+    
     // 3D characters
     var scene;
     var renderer;
     var camera;
     var model;
     var displayDensity;
-
+    
     // Misc
     var stagedTranscript;
     
@@ -345,10 +353,9 @@ function CharApiClient(divid, params) {
         loaded = undefined;
         loading = undefined;
         animating = undefined;
-        startTime = undefined;
         frame = undefined;
         stopping = undefined;
-        recovery = undefined;
+        starting = undefined
         executeCallback = undefined;
         idleTimeout = null;
         rafid = null;
@@ -369,6 +376,9 @@ function CharApiClient(divid, params) {
         preloading = null;
         preloadTimeout = null;
         
+        random = undefined;
+        suppressRandom = false;
+        
         scene = null;
         renderer = null;
         camera = null;
@@ -381,12 +391,13 @@ function CharApiClient(divid, params) {
             return;
         }
 
+        if (random && random.length > 0 && !idle) suppressRandom = true; // immediately drive any random controllers to 0 (idles are assumed not to start with an immediate hand action)
+
         if (say) stageTranscript(transcriptFromText(say));
 
         executeCallback = callback;
 
         stopping = false;
-        recovery = null;
         loading = true;
         animating = false;
 
@@ -443,7 +454,7 @@ function CharApiClient(divid, params) {
                     audioBuffer = buffer;
                     loadAnimation(addedParams, true, false);
                 }, function (e) {
-                    animateFailed(who);
+                    animateFailed();
                 });
             };
             xhr.onerror = function() {animateFailed();}
@@ -660,6 +671,7 @@ function CharApiClient(divid, params) {
     		return;
 		}
         animating = true;
+        starting = true;
 
         // Settling feature - establish a minimum time between successive animations - mostly to prevent back to back audio - because we are so good at preloading
         if (settleTimeout) {clearTimeout(settleTimeout); settleTimeout = 0;}
@@ -694,16 +706,23 @@ function CharApiClient(divid, params) {
     }
 
     function getItStartedActual(startAudio) {
-        // start animation loop
-        if (!rafid) rafid = requestAnimationFrame(animate);
+        // start animation loop if needed
+        if (!rafid) {
+            rafid = requestAnimationFrame(animate);
+            fpsInterval = 1000 / animData.fps;
+            then = Date.now();
+        }
         // start audio
         if (startAudio) {
             if (audioContext) {
-                audioSource = audioContext.createBufferSource();
-                audioSource.buffer = audioBuffer;
-                audioSource.connect(gainNode);
-                gainNode.gain.value = 1;
-                audioSource.start();
+                try {
+                    if (audioSource) audioSource.stop();
+                    audioSource = audioContext.createBufferSource();
+                    audioSource.buffer = audioBuffer;
+                    audioSource.connect(gainNode);
+                    gainNode.gain.value = 1;
+                    audioSource.start();
+                } catch(e){}                    
             }
             else {
                 var audio = document.getElementById(divid + "-audio");   // for use with playAudio
@@ -712,186 +731,207 @@ function CharApiClient(divid, params) {
             // you can use this event to start playing audio, if you are managing audio externally
             document.getElementById(divid).dispatchEvent(createEvent("playStarted"));
         }
+        starting = false;
+		// animation impacts sway in a subtle way
+		if (Math.random() < 0.5) swayTarget = sway;
         // simple strategy - when there is stuff to preload, slip one in every second or so - rarely does it lock up load channels for actual loads
         if (!preloadTimeout && preload)
             preloadTimeout = setTimeout(preloadSomeMore, 500);
     }
 
-    function animate(timestamp) {
-        rafid = undefined;
-        var raf = false;
+    function animate() {
+		rafid = null;
+		now = Date.now();
+        elapsed = now - then;
+        if (elapsed <= fpsInterval) {
+            rafid = requestAnimationFrame(animate);
+            return;
+        }
+        then = now - (elapsed % fpsInterval);
+        var framesSkip = Math.max(1, Math.floor(elapsed / fpsInterval)) - 1;
+        //if (framesSkip > 0) console.log("dropped "+framesSkip+" frame(s)");
+        
         var completed = undefined;
-        if (animData && animating) {
-            if (!startTime)
-                startTime = timestamp;
-
-            // exit case
-            if (frame == -1)
-            {
-                completed = true;
+        var update = false;
+        if (animData) {
+            if (!random) initRandomWalk(animData);
+            var swaying = !!animData.swayLength;
+            if (swaying) {  // For HD character an update can occur because of sway, or actual animation, and often both.
+                updateSway(1+framesSkip);
+                if (animData.breathCycle) updateBreath();
+                update = true;
             }
-            else {
-
-                var frameNew;
-                if (!recovery) {
-                    // normal case - estimate frame based on fps and time from the beginning
-                    var progress = timestamp - startTime;
-                    frameNew = Math.floor(progress / 1000 * animData.fps);
+            if (animating && !starting) {
+                // exit case
+                if (frame == -1) {
+                    completed = true;
                 }
                 else {
-                    // recovering from a stop
-                    var progress = timestamp - recovery.time;
-                    frameNew = recovery.frame + Math.floor(progress / 1000 * animData.fps);
-                }
-
-                if (frameNew == frame) {
-                    raf = true;
-                }
-                else {
-                    frame = frameNew;
-                    if (frame >= animData.frames.length)
-                    {
-                        completed = true;
+                    if (frame === undefined) 
+                        frame = 0;
+                    else { 
+                        var frameNew = frame + 1 + framesSkip;
+                        while (frame < frameNew) {
+                            if (animData.frames[frame][1] == -1) break; // regardless, never move past -1 (end of animation) frame
+                            if (stopping && animData.frames[frame][1]) break; // and when recovering, another recovery frame can occur
+                            frame++;
+                        }
                     }
-                    else {
-                        raf = true;
+                    update = true;
+                }
+            }
+            
+            if (update) {
 
-                        // first arg is the image frame to show
-                        var framerec = animData.frames[frame];
-                        if (!framerec) {
-                            console.log("Character API Client internal error at "+frame);
-                            return;
+                var canvas = document.getElementById(divid + "-canvas");
+                var framerec = animData.frames[frame];
+                // 2D
+                if (canvas && !renderer) {
+                    if (animating && !starting && framerec) { // HD characters only update the offscreen canvas when actually animating
+                        if (random.length > 0) controlRandomWalkSuppression(animData, frame);
+                        var ctx;
+                        if (!swaying) {
+                            ctx = canvas.getContext("2d");
                         }
-
-                        var canvas = document.getElementById(divid + "-canvas");
-                        // 2D
-                        if (canvas && !renderer) {
-                            var ctx = canvas.getContext("2d");
-                            ctx.clearRect(0, 0, canvas.width, canvas.height);
-                            if (animData.recipes) {
-                                var recipe = animData.recipes[framerec[0]];
-                                for (var i = 0; i < recipe.length; i++) {
-                                    var iTexture = recipe[i][6];
-                                    var textureString = (typeof iTexture == "number" ? animData.textures[iTexture] : "");
-                                    
-                                    var src;
-                                    if (textureString == 'default' && defaultTexture)
-                                        src = defaultTexture;
-                                    else if (secondaryTextures && secondaryTextures[textureString])
-                                        src = secondaryTextures[textureString];
-                                    else
-                                        src = texture;
-                                    
-                                    if (recipe[i][7] !== undefined) {
-                                        var o = updateTransform(src, recipe, i);
-                                        var process = recipe[i][7];
-                                        ctx.drawImage(canvasTransformDst[process-1],
-                                            0, 0,
-                                            recipe[i][4], recipe[i][5],
-                                            recipe[i][0] + o.x, recipe[i][1] + o.y,
-                                            recipe[i][4], recipe[i][5]);
-                                    }
-                                    else if (params.format == "jpeg") {
-                                        // jpeg - all overlays should avoid the edge pixels
-                                        var buf = i > 1 ? 0 : 0;
-                                        ctx.drawImage(src,
-                                            recipe[i][2] + buf, recipe[i][3] + buf,
-                                            recipe[i][4] - buf*2, recipe[i][5] - buf * 2,
-                                            recipe[i][0] + buf, recipe[i][1] + buf,
-                                            recipe[i][4] - buf*2, recipe[i][5] - buf*2);
-                                    }
-                                    else {
-                                        // png characters replacement overlays with alpha need to first clear bits they replace e.g. hands up
-                                        if (!animData.layered) {
-                                            ctx.clearRect(
-                                                recipe[i][0], recipe[i][1],
-                                                recipe[i][4], recipe[i][5]
-                                            );
-                                        }
-                                        ctx.drawImage(src,
-                                            recipe[i][2], recipe[i][3],
-                                            recipe[i][4], recipe[i][5],
+                        else {  // if we are an HD character, we'll blit to an offscreen canvas instead
+                            if (!canvasTransformSrc["G"]) {
+                                canvasTransformSrc["G"] = document.createElement('canvas');
+                                canvasTransformSrc["G"].width = canvas.width;
+                                canvasTransformSrc["G"].height = canvas.height + (animData.clothingOverhang||0);
+                            }
+                            ctx = canvasTransformSrc["G"].getContext('2d', {willReadFrequently:true});
+                        }
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        if (animData.recipes) {
+                            var recipe = animData.recipes[framerec[0]];
+                            for (var i = 0; i < recipe.length; i++) {
+                                var iTexture = recipe[i][6];
+                                var textureString = (typeof iTexture == "number" ? animData.textures[iTexture] : "");
+                                
+                                var src;
+                                if (textureString == 'default' && defaultTexture)
+                                    src = defaultTexture;
+                                else if (secondaryTextures && secondaryTextures[textureString])
+                                    src = secondaryTextures[textureString];
+                                else
+                                    src = texture;
+                                
+                                var process = recipe[i][7]||0;
+                                if (process >= 11 && process < 20) updateRandomWalk(process);
+                                if (process == 1 || process == 2) {
+                                    var o = updateTransform(src, recipe, i);
+                                    var process = recipe[i][7];
+                                    ctx.drawImage(canvasTransformDst[process-1],
+                                        0, 0,
+                                        recipe[i][4], recipe[i][5],
+                                        recipe[i][0] + o.x, recipe[i][1] + o.y,
+                                        recipe[i][4], recipe[i][5]);
+                                }
+                                else if (params.format == "png") {
+                                    // png characters replacement overlays with alpha need to first clear bits they replace e.g. hands up
+                                    if (!animData.layered && process != 3) {
+                                        ctx.clearRect(
                                             recipe[i][0], recipe[i][1],
-                                            recipe[i][4], recipe[i][5]);
+                                            recipe[i][4], recipe[i][5]
+                                        );
+                                    }
+                                    ctx.drawImage(src,
+                                        recipe[i][2], recipe[i][3] + (process >= 11 && process < 20 ? recipe[i][5] * random[process - 10].frame : 0),
+                                        recipe[i][4], recipe[i][5],
+                                        recipe[i][0], recipe[i][1] + (process == 3 ? animData.clothingOverhang||0 : 0), // in HD process 3 (clothing), clothing can be artificially high by clothingOverhang pixels, and needs to be shifted down again here,
+                                        recipe[i][4], recipe[i][5]);
+                                }
+                                else {
+                                    ctx.drawImage(src,
+                                        recipe[i][2], recipe[i][3],
+                                        recipe[i][4], recipe[i][5],
+                                        recipe[i][0], recipe[i][1],
+                                        recipe[i][4], recipe[i][5]);
+                                }
+                            }
+                        }
+                        else { // simpler, strip format
+                            ctx.drawImage(texture, 0, 0, params.width, params.height, 0, 0, params.width, params.height);
+                        }
+                    }    
+                    if (swaying) { // for HD characters, this is where the actual canvas gets updated - often the offscreen canvas will remain unchanged
+                        updateGlobalTransform(sway, canvas);
+                    }
+                }
+                
+                // 3D
+                if (canvas && renderer) {
+                    if (animData.recipes) {
+                        var recipe = animData.recipes[framerec[0]];
+                        var mesh = null;
+                        model.traverse(o => {
+                            if (o.type == "SkinnedMesh")
+                                mesh = o;
+                        });
+                        if (mesh) mesh.updateMorphTargets();
+                        for (var i = 0; i < recipe.length; i++) {
+                            var name = animData.targets[recipe[i][0]];
+                            if (recipe[i].length == 2) { // morph target
+                                if (mesh) {
+                                    for (var j = 0; j < mesh.userData.targetNames.length; j++) {
+                                        if (mesh.userData.targetNames[j] == name) {
+                                            mesh.morphTargetInfluences[j] = recipe[i][1];
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                            else {
-                                ctx.drawImage(texture, 0, 0, params.width, params.height, 0, 0, params.width, params.height);
-                            }
-                        }
-                        // 3D
-                        if (canvas && renderer) {
-                            if (animData.recipes) {
-                                var recipe = animData.recipes[framerec[0]];
-                                var mesh = null;
+                            else { // bone target
+                                var bone = null;
                                 model.traverse(o => {
-                                    if (o.type == "SkinnedMesh")
-                                        mesh = o;
+                                    if (o.isBone && o.name === name)
+                                        bone = o;
                                 });
-                                if (mesh) mesh.updateMorphTargets();
-                                for (var i = 0; i < recipe.length; i++) {
-                                    var name = animData.targets[recipe[i][0]];
-                                    if (recipe[i].length == 2) { // morph target
-                                        if (mesh) {
-                                            for (var j = 0; j < mesh.userData.targetNames.length; j++) {
-                                                if (mesh.userData.targetNames[j] == name) {
-                                                    mesh.morphTargetInfluences[j] = recipe[i][1];
-                                                    break;
-                                                }
-                                            }
-                                        }
+                                if (bone) {
+                                    bone.rotation.x = THREE.Math.degToRad(recipe[i][1]);
+                                    bone.rotation.y = THREE.Math.degToRad(recipe[i][2]);
+                                    bone.rotation.z = THREE.Math.degToRad(recipe[i][3]);
+                                    if (recipe[i][4] !== undefined) {
+                                        bone.position.x = recipe[i][4];
+                                        bone.position.y = recipe[i][5];
+                                        bone.position.z = recipe[i][6];
                                     }
-                                    else { // bone target
-                                        var bone = null;
-                                        model.traverse(o => {
-                                            if (o.isBone && o.name === name)
-                                                bone = o;
-                                        });
-                                        if (bone) {
-                                            bone.rotation.x = THREE.Math.degToRad(recipe[i][1]);
-                                            bone.rotation.y = THREE.Math.degToRad(recipe[i][2]);
-                                            bone.rotation.z = THREE.Math.degToRad(recipe[i][3]);
-                                            if (recipe[i][4] !== undefined) {
-                                                bone.position.x = recipe[i][4];
-                                                bone.position.y = recipe[i][5];
-                                                bone.position.z = recipe[i][6];
-                                            }
-                                            if (recipe[i][7] !== undefined) {
-                                                bone.scale.x = recipe[i][7];
-                                                bone.scale.y = recipe[i][8];
-                                                bone.scale.z = recipe[i][9];
-                                            }
-                                        }
+                                    if (recipe[i][7] !== undefined) {
+                                        bone.scale.x = recipe[i][7];
+                                        bone.scale.y = recipe[i][8];
+                                        bone.scale.z = recipe[i][9];
                                     }
                                 }
                             }
-                            renderer.render(scene, camera);
                         }
+                    }
+                    renderer.render(scene, camera);
+                }
 
-                        // third arg is an extensible side-effect string that is triggered when a given frame is reached
-                        if (animData.frames[frame][2])
-                            onEmbeddedCommand(animData.frames[frame][2]);
-                        // second arg is -1 if this is the last frame to show, or a recovery frame to go to if stopping early
-                        var recoveryFrame = animData.frames[frame][1];
-                        if (recoveryFrame == -1)
-                            frame = -1;
-                        else if (stopping && recoveryFrame)
-                            recovery = {frame:recoveryFrame, time:timestamp};
+                if (framerec) {
+                    // third arg is an extensible side-effect string that is triggered when a given frame is reached
+                    if (framerec[2])
+                        onEmbeddedCommand(framerec[2]);
+                    // second arg is -1 if this is the last frame to show, or a recovery frame to go to if stopping early
+                    var recoveryFrame = animData.frames[frame][1];
+                    if (recoveryFrame == -1) {
+                        frame = -1;
+                    }
+                    else if (stopping && recoveryFrame) {
+                        frame = recoveryFrame;
                     }
                 }
             }
         }
 
-        if (raf) rafid = requestAnimationFrame(animate);
         if (completed) {
             animating = false;
             stopping = false;
-            recovery = null;
-            startTime = undefined;
             frame = undefined;
             animateComplete();
         }
+        
+        rafid = requestAnimationFrame(animate);
     }
 
     function stopAll() {
@@ -953,6 +993,56 @@ function CharApiClient(divid, params) {
     }
 
     // Needed for HD characters only
+    
+    function initRandomWalk(animData) {
+        random = [];
+        for (var n = 1; n <= 9; n++) {
+            var s = animData["random"+n];
+            if (s) random[n] = {frame:0, inc:0, count:0, frames:parseInt(s.split(",")[0])};
+        }
+    }
+
+    function controlRandomWalkSuppression(animData, frame) {
+        // Are layers with random process present in the next 6 frames? If so, suppressRandom = true, else false.
+        var present = true;
+        try {
+            for (var d = 0; d < 6; d++) {
+                var frameTest = frame + d;
+                if (animData.frames[frameTest][1] == -1 || stopping && animData.frames[frameTest][1]) break; // stop searching when we run out of frames
+                var framerec = animData.frames[frameTest];
+                var recipe = animData.recipes[framerec[0]];
+                var found = false;
+                for (var i = 0; i < recipe.length; i++) {
+                    var process = recipe[i][7]||0;
+                    if (process >= 11 && process < 20) {found = true; break;}
+                }
+                if (!found) {present = false; break;}
+            }
+        } catch(e) {}
+        suppressRandom = !present;
+    }
+
+    function updateRandomWalk(process) {
+        var n = process - 10;
+        // drive rapidly to frame 1
+        if (suppressRandom) {
+            if (random[n].frame > 1) random[n].frame = Math.round(random[n].frame/2);
+            random[n].count = 0;
+            random[n].inc = 0;
+            return;
+        }
+        // execute a count of steps in a given direction
+        if (random[n].count > 0) {
+            random[n].frame = Math.max(0, Math.min(random[n].frames-1, random[n].frame + random[n].inc));
+            random[n].count--;
+        }
+        // choose new random direction and count
+        else {
+            random[n].count = Math.floor(random[n].frames/3) + Math.floor(Math.random() * random[n].frames);
+            random[n].inc = Math.random() < 0.5 ? -1 : 1;
+        }
+    }
+    
     function updateTransform(src, recipe, i) {
         // Gather params
         var width = recipe[i][4];
@@ -966,7 +1056,8 @@ function CharApiClient(divid, params) {
         var twist = recipe[i][9] / 180 * Math.PI;
         var side = recipe[i][10] / 180 * Math.PI;
         side += twist * animData.twistToSide;
-        var sideLength = animData.sideLength;
+        bend += side * (animData.sideToBend||0);
+        var sideLength = animData.sideLength;//*2;
         var lowerJawDisplacement = animData.lowerJawDisplacement;
         var lowerJaw = recipe[i][8];
         var shoulderDisplacement = animData.shoulderDisplacement;
@@ -1057,7 +1148,7 @@ function CharApiClient(divid, params) {
                         if (v > vpp) 
                             alpha = 0;
                         else if (v >= vp && v <= vpp) 
-                            alpha = Math.round(255 * (vpp - ((v - vp)/(vpp - vp))));
+                            alpha = Math.round(255 * ((Math.sqrt(vpp) - Math.sqrt(v))/(Math.sqrt(vpp) - Math.sqrt(vp))));
                         else
                             alpha = 255;
                     }
@@ -1112,12 +1203,115 @@ function CharApiClient(divid, params) {
                 }
             }
         }
-        else if (process == 3) {
-            target = source; // shoulder movement is a WIP
-        }
         canvasTransformDst[process-1].getContext('2d').putImageData(target, 0, 0);
         return {x:deltax, y:deltay};
     }
+    
+    function updateGlobalTransform(sway, canvas) {
+        var width = canvas.width;
+        var height = canvas.height;
+        var swayLength = animData.swayLength;
+        var swayBorder = animData.swayBorder;
+        var swayProcess = animData.swayProcess||1;
+        // 0 2 4 
+        // 1 3 5
+        var m = [1, 0, 0, 1, 0, 0];
+        var m1 = [1, 0, 0, 1, 0, 0];
+        var m2 = [1, 0, 0, 1, 0, 0];
+        var hipx;
+        if (swayProcess == 1) { // note sway expressed in radians throughout
+            // pivot around a point swayLength below image center, around where hips would be (assumes sitting)
+            addXForm(1, 0, 0, 1, 0, -swayLength, m);
+            addXForm(Math.cos(sway), Math.sin(sway), -Math.sin(sway), Math.cos(sway), 0, 0, m);
+            addXForm(1, 0, 0, 1, 0, swayLength, m);
+        } 
+        else if (swayProcess == 2) {
+            // assume character centered vertically with feet at or near bottom - use m1 from a point at the bottom to sway bottom half of iamge one way,
+            // compute that hip displacement hipx, then use m1 to sway the top half in half the amount, shifted by hipx, the other way. Interpolate in the middle.
+            addXForm(1, 0, 0, 1, 0, -height/2, m2);
+            addXForm(Math.cos(-sway), Math.sin(-sway), -Math.sin(-sway), Math.cos(-sway), 0, 0, m2);
+            addXForm(1, 0, 0, 1, 0, height/2, m2);
+            hipx = height/2 * Math.tan(sway);
+            addXForm(1, 0, 0, 1, 0, 0, m1);
+            addXForm(Math.cos(sway/2), Math.sin(sway/2), -Math.sin(sway/2), Math.cos(sway/2), 0, 0, m1);
+            addXForm(1, 0, 0, 1, 0, 0, m1);
+        }
+        var overhang = (animData.clothingOverhang||0);
+        var source = canvasTransformSrc["G"].getContext('2d', {willReadFrequently:true}).getImageData(0, 0, width, height + overhang);
+        var target = canvas.getContext('2d', {willReadFrequently:true}).createImageData(width, height);
+        var xDstGlobal,yDstGlobal,xSrcGlobal,ySrcGlobal;
+        var xSrc,ySrc,x1Src,x2Src,y1Src,y2Src,offSrc1,offSrc2,offSrc3,offSrc4,rint,gint,bint,aint;
+        var offDst = 0;
+        var a = []; // optimize inner loop
+        for (var xDst = 0; xDst < width; xDst++) {
+            a[xDst] = breath*(Math.cos(xDst*2*Math.PI/width)/2 + 0.5);
+        }
+        for (var yDst = 0; yDst < height; yDst++) {
+            for (var xDst = 0; xDst < width; xDst++) {
+                if (swayBorder && (xDst < swayBorder || xDst > width-swayBorder)) { // optimization - our body characters have a lot of blank space on sides
+                    target.data[offDst] = 0; offDst++;
+                    target.data[offDst] = 0; offDst++;
+                    target.data[offDst] = 0; offDst++;
+                    target.data[offDst] = 0; offDst++;
+                    continue;
+                }
+                xDstGlobal = xDst + 0.001 - width/2;
+                yDstGlobal = yDst + 0.001 - height/2;
+                if (swayProcess == 1) {
+                    xSrcGlobal = m[0] * xDstGlobal + m[2] * yDstGlobal + m[4];
+                    ySrcGlobal = m[1] * xDstGlobal + m[3] * yDstGlobal + m[5];
+                }
+                else if (swayProcess == 2) {
+                    var overlap = height/10; // vertical distance from height/2 in which we interpolate between the two transforms
+                    if (yDst < height/2 - overlap) {
+                        xSrcGlobal = -hipx + m1[0] * xDstGlobal + m1[2] * yDstGlobal + m1[4];
+                        ySrcGlobal = m1[1] * xDstGlobal + m1[3] * yDstGlobal + m1[5];
+                    }
+                    else if (yDst < height/2 + overlap) {
+                        var xSrcGlobal1,ySrcGlobal1,xSrcGlobal2,ySrcGlobal2;
+                        xSrcGlobal1 = -hipx + m1[0] * xDstGlobal + m1[2] * yDstGlobal + m1[4];
+                        ySrcGlobal1 = m1[1] * xDstGlobal + m1[3] * yDstGlobal + m1[5];
+                        xSrcGlobal2 = m2[0] * xDstGlobal + m2[2] * yDstGlobal + m2[4];
+                        ySrcGlobal2 = m2[1] * xDstGlobal + m2[3] * yDstGlobal + m2[5];
+                        var f = (yDst - (height/2 - overlap)) / (overlap * 2);
+                        xSrcGlobal = xSrcGlobal1*(1-f) + xSrcGlobal2*f;
+                        ySrcGlobal = ySrcGlobal1*(1-f) + ySrcGlobal2*f;
+                    }
+                    else {
+                        xSrcGlobal = m2[0] * xDstGlobal + m2[2] * yDstGlobal + m2[4];
+                        ySrcGlobal = m2[1] * xDstGlobal + m2[3] * yDstGlobal + m2[5];
+                    }
+                }
+                xSrc = xSrcGlobal + width/2;
+                ySrc = ySrcGlobal + height/2;
+                ySrc -= a[xDst];
+                x1Src = Math.max(Math.min(Math.floor(xSrc), width-1), 0);
+                x2Src = Math.max(Math.min(Math.ceil(xSrc), width-1), 0);
+                y1Src = Math.max(Math.min(Math.floor(ySrc), height+overhang-1), 0);
+                y2Src = Math.max(Math.min(Math.ceil(ySrc), height+overhang-1), 0);
+                if (x1Src == x2Src) {
+                    if (x1Src == 0) x2Src++; else x1Src--;
+                }
+                if (y1Src == y2Src) {
+                    if (y1Src == 0) y2Src++; else y1Src--;
+                }
+                offSrc1 = y1Src*4*width + x1Src*4;
+                offSrc2 = y1Src*4*width + x2Src*4;
+                offSrc3 = y2Src*4*width + x1Src*4;
+                offSrc4 = y2Src*4*width + x2Src*4;
+                rint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+0] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+0] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+0] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+0]);
+                gint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+1] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+1] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+1] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+1]);
+                bint = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+2] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+2] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+2] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+2]);
+                var alpha;
+                alpha = Math.round((x2Src-xSrc)*(y2Src-ySrc) * source.data[offSrc1+3] + (xSrc-x1Src)*(y2Src-ySrc) * source.data[offSrc2+3] + (x2Src-xSrc)*(ySrc-y1Src) * source.data[offSrc3+3] + (xSrc-x1Src)*(ySrc-y1Src) * source.data[offSrc4+3]);
+                target.data[offDst] = rint; offDst++;
+                target.data[offDst] = gint; offDst++;
+                target.data[offDst] = bint; offDst++;
+                target.data[offDst] = alpha; offDst++;
+            }
+        }
+        canvas.getContext('2d').putImageData(target, 0, 0);
+    } 
     
     function addXForm(a, b, c, d, e, f, m) {
         // a c e   ma mc me
@@ -1132,7 +1326,8 @@ function CharApiClient(divid, params) {
             return [];
         else if (idleData) {
             var a = [];
-            for (let s of idleData[idleType]) {
+            for (var i = 0; i < idleData[idleType].length; i++) {
+                var s = idleData[idleType][i];
                 var m = s.match(/([a-z]+)([0-9]+)-([0-9]+)/);
                 if (m) {
                     for (var i = parseInt(m[2]); i <= parseInt(m[3]); i++)
@@ -1162,7 +1357,7 @@ function CharApiClient(divid, params) {
         renderer.setPixelRatio(window.devicePixelRatio);
         camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 2000);
         // You can use this event to override the 3d settings
-        let e = createEvent("setup3d", {scene:scene, camera:camera, model:model});
+        var e = createEvent("setup3d", {scene:scene, camera:camera, model:model});
         document.getElementById(divid).dispatchEvent(e);
         if (!e.defaultPrevented) {
             // Adjust model scale and position
@@ -1369,6 +1564,28 @@ function CharApiClient(divid, params) {
 
             e.onclick = onPlayShieldClick;
         }
+    }
+
+    function updateSway(framesSway) {
+        if (swayTarget == undefined || Math.abs(sway - swayTarget) < 0.001) {
+            if (that.playing()) {
+                swayTarget = -animData.normalSwayRange + Math.random() * animData.normalSwayRange * 2;
+                swayAccel = animData.normalSwayAccelMin + (animData.normalSwayAccelMax - animData.normalSwayAccelMin) * Math.random();
+            }
+            else {
+                swayTarget = -animData.idleSwayRange + Math.random() * animData.idleSwayRange * 2;
+                swayAccel = animData.idleSwayAccelMin + (animData.idleSwayAccelMax - animData.idleSwayAccelMin) * Math.random();
+            }
+        }
+        while (framesSway > 0) {
+            sway += (swayTarget - sway) * swayAccel;
+            framesSway--;
+        }
+    }
+
+    function updateBreath() {
+        breath = animData.shoulderDisplacement * Math.max(0, Math.sin(breathTime * 2 * Math.PI / animData.breathCycle));
+        breathTime += fpsInterval;
     }
 
     //

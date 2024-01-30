@@ -20,9 +20,10 @@ Charges will appear on your monthly AWS bill.
 This sample uses the Amazon Polly Text-to-Speech API, which is also priced based on usage. 
 Since this sample caches the API results, API fees are only incurred for text that has not already been seen, so your actual spend depends on your traffic and on the effectiveness of the cache.
 
-To access the AWS Polly Text-to-Speech service, you will want to create an IAM User for your app. On the AWS Console, go to the IAM service and click Add User. You might call the user "polly".
-Select the "Programmatic access" checkbox and click Next. Click "Attach existing policies directly". In the Policy Type search box, enter "polly", then check the box beside AmazonPollyFullAccess. Click Next.
-Review the details, then click "Create user". On the next screen, you will want to copy two strings. The Access key ID is a string of capitalized alphanumeric characters, and the Secret Access Key is longer string
+To access the AWS Polly Text-to-Speech service, you will want to create an IAM User for your app. On the AWS Console, go to the IAM service, click Users and then "Create User". Provide a name, such as "github_sample".
+Press Next. Select "Attach policies directly". Then, in the Permissions policies Search field, type "polly". Select the checkbox next to AmazonPollyFullAccess. Click Next. Optionally create a tag, then click Create User.
+Next, click on the newly created user to open it, and click the "Security credentials" tab. Scroll down to the section labeled "Access keys" and press "Create access key". Click Other, then Next. Then press "Create access key".
+You will want to copy two strings. The Access key ID is a string of capitalized alphanumeric characters, and the Secret Access Key is longer string
 of mixed-case characters. Make sure you record both values, as you will need to insert them into the sample.
 
 ## Installation
