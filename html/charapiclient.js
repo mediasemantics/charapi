@@ -1,3 +1,6 @@
+// Character API Reference Client 
+// https://github.com/mediasemantics/charapi
+// https://aws.amazon.com/marketplace/pp/prodview-43pgbzjb7krp6
 'use strict';
 (function(lib, $) {
     lib.instances = {};
