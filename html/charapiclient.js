@@ -1060,7 +1060,6 @@ function CharApiClient(divid, params) {
         var sideLength = animData.sideLength;//*2;
         var lowerJawDisplacement = animData.lowerJawDisplacement;
         var lowerJaw = recipe[i][8];
-        var shoulderDisplacement = animData.shoulderDisplacement;
         var shoulders = recipe[i][8];
         var x = recipe[i][11];
         var y = recipe[i][12];
@@ -1584,7 +1583,7 @@ function CharApiClient(divid, params) {
     }
 
     function updateBreath() {
-        breath = animData.shoulderDisplacement * Math.max(0, Math.sin(breathTime * 2 * Math.PI / animData.breathCycle));
+        breath = (animData.shoulderDisplacement||0) * Math.max(0, Math.sin(breathTime * 2 * Math.PI / animData.breathCycle));
         breathTime += fpsInterval;
     }
 
