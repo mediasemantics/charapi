@@ -9,15 +9,16 @@ For a detailed introduction to the Character API, please read the [Character API
 You can see the Reference Implementation running [here](https://mediasemantics.com/charapiclient.html). 
 
 ## Requirements
-This ReadMe describes how to install the project on your local machine. It works on Mac and Windows, but you must have NodeJS installed.
-If you prefer, you can also install the server portion directly on a web server. Please see this [tutorial](https://www.mediasemantics.com/apitutorial2.html) for tips on setting up an AWS EC2 instance using Apache and Node.js.
+This ReadMe describes how to install the project on your local machine. You must have NodeJS installed.
+If you prefer, you can also install the server portion directly on a web server. Please see this [tutorial](https://www.mediasemantics.com/apitutorial2.html) for tips on setting up an AWS EC2 instance.
 
 ## Obtaining keys
-Use this [AWS Markeplace](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ) page to add the
+Use the [AWS Markeplace](https://aws.amazon.com/marketplace/pp/B06ZY1VBFZ) page to add the
 Character API service to your AWS account. You will receive credentials by email to log onto your API dashboard. There you will generate an API key that you will insert in the server.js file. You will be charged $0.007 per call to the Character API. There are no monthly minimums. 
 Charges will appear on your monthly AWS bill. 
 
 This sample uses the Amazon Polly Text-to-Speech API, which is also priced based on usage. 
+
 Since this sample caches the API results, API fees are only incurred for text that has not already been seen, so your actual spend depends on your traffic and on the effectiveness of the cache.
 
 To access the AWS Polly Text-to-Speech service, you will want to create an IAM User for your app. On the AWS Console, go to the IAM service, click Users and then "Create User". Provide a name, such as "github_sample".
@@ -26,7 +27,8 @@ Next, click on the newly created user to open it, and click the "Security creden
 You will want to copy two strings. The Access key ID is a string of capitalized alphanumeric characters, and the Secret Access Key is longer string
 of mixed-case characters. Make sure you record both values, as you will need to insert them into the sample.
 
-## Installation
+## Installing the Server
+
 Install the sample in a directory on the server, e.g. the home directory:
 ```
 cd ~  
@@ -64,41 +66,32 @@ http://localhost:3000/animate?character=SusanHead&version=3.0
 ```
 You should see a strange image appear (it is a texture map, and is not meant to be displayed directly.)
 
-Next, you can move the file html/charapiclient.html to your web directory and run it in a web browser using the appropriate http://localhost url. 
+## Installing the HTML Client
 
-Or you can use the following steps to run the file in a local web server:
+The Reference Implementation uses the <a href="https://www.npmjs.com/package/@mediasemantics/character-api-client">character-api-client</a> available on npmjs.com. You can use this module for any application in which you are using live, animated characters together with HTML content.
 
-In a new command line window:
+Open a second command window in the html directory. Ensure the client module is installed.
+
+```
+cd ~/charapi/html
+npm install
+```
+
+Then install and run a local file server.
+
 ```
 npm install -g http-server
 cd ~/charapi/html
 http-server . -p 3001
 ```
+
 Then point your browser to: http://localhost:3001/charapiclient.html
 
+## Note on scaling
 
+The reference server code uses disk-based cache and locking, for simplicity. However it is better to use a memory-based caching technology such as Redis. This also becomes essential if you are creating a scalable implementation using a load balancer with more than one server. The Reference Implementation includes commented-out code that is suitable for use with the Redis implementation in AWS Elasticache.
 
-## How it works
+## Next steps
 
-The page uses the charapiclient.js library to create an animated character. This library calls the animate endpoint on the caching server,
-which in turn calls the Character API and Polly as required to replenish its cache.
-
-The character acts like a puppet. Without any input, it exhibits an "idle" behavior. 
-By examining the code in charapiclient.html, you will see that you can prompt it to say different things by invoking the dynamicPlay() function.
-Each call to dynamicPlay consists of a do/say pair representing a string to be spoken and a manner in which to speak it. You can also use 
-a 'do' by itself to perform a silent action, or a 'say' by itself to speak with no deliberate action.
-
-```
-dynamicPlay({do:'look-right', say:'Look over here.'})
-```
-
-If an item is already playing then dynamicPlay calls are queued up for playback. If you have a lot of text to play, then we recommend that you break it up into multiple 
-dynamicPlay() calls of approximately one sentence each. This allows the synthesis to be performed a little at a time, so the user can 
-begin listening with minimal delay, while more is being preloaded.
-
-Please see [Character API Tutorial](https://www.mediasemantics.com/apitutorial.html) for a detailed introduction to the Character API and additional tips 
-for building solutions based on the Reference Implementation.
-
-
-
+Learn more about how to control your character at the <a href="https://www.npmjs.com/package/@mediasemantics/character-api-client">character-api-client</a> readme.
 

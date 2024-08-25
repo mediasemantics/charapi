@@ -27,165 +27,153 @@ app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
 // The Character API endpoints
 
-var urlCatalog = "http://api.mediasemantics.com/catalog";
 var urlAnimate = "http://api.mediasemantics.com/animate";
+var urlCatalog = "http://api.mediasemantics.com/catalog";
 
-// The animation catalog
-var catalog = null;
-var catalogTimestamp = null;
-var CATALOG_TTL = 60 * 60 * 1000; // 1 hour
 
 app.get('/animate', function(req, res, next) {
     console.log("animate");
     if (req.query.type != "audio" && req.query.type != "image" && req.query.type != "model" && req.query.type != "data") req.query.type = "image"; // default to image
 
-    loadCatalogIfNecessary(function(e){
-        if (e) return next(e);
-        
-        var character;
-        var version;
-        
-        // The client specifies the character
-        if (req.query.character) character = req.query.character;
-        // And a precise version - this lets you upgrade to a new character and clear all levels of caching
-        if (req.query.version) version = req.query.version;
-        
-        // These parameters can technically be derived from the character if they are not supplied
-        var charobj = characterObject(character);
-        var charstyleobj = characterStyleObject(charobj.style);
-        var width = req.query.width || charstyleobj.naturalWidth;
-        var height = req.query.height || charstyleobj.naturalHeight;
-        var density = req.query.density || "1";
-        var charscale = req.query.charscale || "1";
-        var format = req.query.format || (charobj.style.split("-")[0] == "realistic" ? "jpeg" : "png");
-        
-        // Determine an appropriate voice for your character - or you can fix it here instead
-        var voice = charobj.defaultVoice;
-
-        // Allow client to override voice. TODO - delete this line if your voice is always the same.
-        if (req.query.voice) voice = req.query.voice;
-        
-        // Build a hash of all parameters to send to the Character API
-        var o = {
-            "character":character,
-            "version":version,
-            "return":"true",
-            "recover":"true",
-            "format":format,
-            "width":width.toString(),
-            "height":height.toString(),
-            "density":density,
-            "charscale":charscale,
-            "charx":"0",
-            "chary":"0",
-            "fps":"24",
-            "quality":"95",
-            "backcolor":"ffffff",
-            "do":req.query.do,
-            "say":req.query.say,
-        };
+    var character;
+    var version;
     
-        // Add to that any other parameters that are variable, from the client
-        if (req.query.texture) o.texture = req.query.texture;
-        if (req.query.with) o.with = req.query.with;
-        if (req.query.charx) o.charx = req.query.charx.toString();
-        if (req.query.chary) o.chary = req.query.chary.toString();
-        if (req.query.lipsync) o.lipsync = req.query.lipsync;
-        if (req.query.initialstate) o.initialstate = req.query.initialstate;
-        if (req.query.return) o.return = req.query.return;        
+    // The client specifies the character
+    if (req.query.character) character = req.query.character;
+    // And a precise version - this lets you upgrade to a new character and clear all levels of caching
+    if (req.query.version) version = req.query.version;
+    
+    // These parameters are normally supplied by the client
+    var width = parseInt(req.query.width || '250');
+    var height = parseInt(req.query.height || '200');
+    var density = req.query.density || "1";
+    var charscale = req.query.charscale || "1";
+    var format = req.query.format || "png";
+    var voice = req.query.voice || "NeuralJoanna";
+    
+    // Build a hash of all parameters to send to the Character API
+    var o = {
+        "character":character,
+        "version":version,
+        "return":"true",
+        "recover":"true",
+        "format":format,
+        "width":width.toString(),
+        "height":height.toString(),
+        "density":density,
+        "charscale":charscale,
+        "charx":"0",
+        "chary":"0",
+        "fps":"24",
+        "do":req.query.do,
+        "say":req.query.say,
+    };
+    
+    // Add to that any other parameters that are variable, from the client
+    if (req.query.texture) o.texture = req.query.texture;
+    if (req.query.with) o.with = req.query.with;
+    if (req.query.charx) o.charx = req.query.charx.toString();
+    if (req.query.chary) o.chary = req.query.chary.toString();
+    if (req.query.lipsync) o.lipsync = req.query.lipsync;
+    if (req.query.initialstate) o.initialstate = req.query.initialstate;
+    if (req.query.return) o.return = req.query.return;        
 
-        // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
-        // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
-        // if (o.say && o.say.length > 256) throw new Error('limit reached'); // limit message length
-        // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
+    // TODO - if you DO allow parameters to come from the client, then it is a good idea to limit them to what you need. E.g.:
+    // if (o.character != "SteveHead" && o.character != "SusanHead") throw new Error('limit reached');  // limit characters
+    // if (o.say && o.say.length > 256) throw new Error('limit reached'); // limit message length
+    // if (voice != "NeuralJoanna" && voice != "NeuralMatthew") throw new Error('limit reached'); // limit voices
 
-        // Things break further on if we don't have defaults on these
-        if (!o.format) o.format = "png";
-        
-        if (o.do || o.say) o["with"] = "all";  // all but the initial empty action requests that output be generated that assumes we will fetch all textures
-        
-        // Now use all these parameters to create a hash that becomes the file type
-        var crypto = require('crypto');
-        var hash = crypto.createHash('md5');
-        for (var key in o)
-            hash.update(o[key]||"");
-        hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
-        if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes, to defeat browser caching
-        var filebase = hash.digest("hex");
-        var type = req.query.type;                          // This is the type of file actually requested - audio, image, model, or data
-        var format = o.format;                              // "png" or "jpeg"
+    if (o.do || o.say) o["with"] = "all";  // all but the initial empty action requests that output be generated that assumes we will fetch all textures
+    
+    // Now use all these parameters to create a hash that becomes the file type
+    var crypto = require('crypto');
+    var hash = crypto.createHash('md5');
+    for (var key in o)
+        hash.update(o[key]||"");
+    hash.update(voice);                                 // This is not a Character API parameter but it also should contribute to the hash
+    if (req.query.cache) hash.update(req.query.cache);  // Client-provided cache buster that can be incremented when server code changes, to defeat browser caching
+    var filebase = hash.digest("hex");
+    var type = req.query.type;                          // This is the type of file actually requested - audio, image, model, or data
+    var format = o.format;                              // "png" or "jpeg"
 
-        // NOTE: A more scaleable implementation, optimized for load balancers, would use redis and ioredis-lock.
-        lockFile.lock(targetFile(filebase, "lock"), {}, function() {
-            let file = targetFile(filebase, type, format);
-            fs.exists(file, function(exists) {
-                if (exists) {
-                    lockFile.unlock(targetFile(filebase, "lock"), function() {
-                        // "touch" each file we return - you can use a cron to delete files older than a certain age
-                        let time = new Date();
-                        fs.utimes(file, time, time, () => { 
-                            finishAnimate(req, res, filebase, type, o.format);
+    // NOTE: A more scaleable implementation, optimized for load balancers, would use redis and ioredis-lock - see sample code interspersed.
+    lockFile.lock(targetFile(filebase, "lock"), {}, function() {
+        let file = targetFile(filebase, type, format);
+        fs.exists(file, function(exists) {
+            if (exists) {
+                lockFile.unlock(targetFile(filebase, "lock"), function() {
+                    // "touch" each file we return - you can use a cron to delete files older than a certain age
+                    let time = new Date();
+                    fs.utimes(file, time, time, () => { 
+                        finishAnimate(req, res, filebase, type, o.format);
+                    });
+                });
+            }
+    // const redisLock = require('ioredis-lock').createLock(redis, {timeout: 10000, retries: 100, delay: 100});
+    // redisLock.acquire("sample-lock-" + filebase).catch(err => console.log("LOCK NOT ACQUIRED")).then(function() {
+    //     redis.exists("sample-" + type + "-" + filebase, function(err, n) {
+    //         if (n == 1) {
+    //             redisLock.release().catch(err => console.log("LOCK NOT RELEASED"));
+    //             finishAnimate(req, res, filebase, type, o.format);
+    //         }
+            else {
+                // Cache miss - do the work!
+
+                // Case where there is no tts and we can send straight to animate
+                if (!containsActualSpeech(o.say) || o.lipsync)
+                {
+                    o.key = charAPIKey;
+                    o.zipdata = true;
+                    console.log("---> calling animate w/ "+JSON.stringify(o));
+                    var animateTimeStart = new Date();						
+                    request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                        var animateTimeEnd = new Date();						
+                        console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                        if (err) return next(new Error(body));
+                        if (httpResponse.statusCode >= 400) return next(new Error(body));
+                        fs.writeFile(targetFile(filebase, type, o.format), body, "binary", function(err) { // redis.set("sample-" + type + "-" + filebase, body, function(err) {
+                            if (o.texture) {
+                                // texture requests don't have associated data, so we are done
+                                lockFile.unlock(targetFile(filebase, "lock"), function() { // redisLock.release().catch(err => console.log("LOCK NOT RELEASED"));
+                                    finishAnimate(req, res, filebase, type, o.format);
+                                });
+                            }
+                            else {
+                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                zlib.unzip(buffer, function (err, buffer) {
+                                    fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) { // redis.set("sample-data-" + filebase, buffer.toString(), function(err) {
+                                        lockFile.unlock(targetFile(filebase, "lock"), function() { // redisLock.release().catch(err => console.log("LOCK NOT RELEASED"));
+                                            finishAnimate(req, res, filebase, type, o.format);
+                                        });
+                                    });
+                                });
+                            }
                         });
                     });
                 }
-                else {
-                    // Cache miss - do the work!
-
-                    // Case where there is no tts and we can send straight to animate
-                    if (!containsActualSpeech(o.say) || o.lipsync)
-                    {
-                        o.key = charAPIKey;
-                        o.zipdata = true;
-                        console.log("---> calling animate w/ "+JSON.stringify(o));
-                        var animateTimeStart = new Date();						
-                        request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                            var animateTimeEnd = new Date();						
-                            console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                            if (err) return next(new Error(body));
-                            if (httpResponse.statusCode >= 400) return next(new Error(body));
-                            fs.writeFile(targetFile(filebase, type, o.format), body, "binary", function(err) {
-                                if (o.texture) {
-                                    // texture requests don't have associated data, so we are done
-                                    lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                        finishAnimate(req, res, filebase, type, o.format);
-                                    });
-                                }
-                                else {
-                                    var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                                    zlib.unzip(buffer, function (err, buffer) {
-                                        fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {					
-                                            lockFile.unlock(targetFile(filebase, "lock"), function() {
-                                                finishAnimate(req, res, filebase, type, o.format);
-                                            });
-                                        });
-                                    });
-                                }
-                            });
-                        });
-                    }
-                    // Case where we need to get tts and lipsync it first
-                    else
-                    {
-                        var textOnly = removeAllButSpeechTags(o.say);
-                        doParallelTTS(textOnly, voice, function(err, audioData, lipsyncData) {
+                // Case where we need to get tts and lipsync it first
+                else
+                {
+                    var textOnly = removeAllButSpeechTags(o.say);
+                    doParallelTTS(textOnly, voice, function(err, audioData, lipsyncData) {
+                        if (err) return next(new Error(err.message));
+                        fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
                             if (err) return next(new Error(err.message));
-                            fs.writeFile(targetFile(filebase, "audio"), audioData, function (err) {
-                                if (err) return next(new Error(err.message));
-                                // pass the lipsync result to animate.
-                                o.key = charAPIKey;
-                                o.zipdata = true;
-                                o.lipsync = lipsyncData;
-                                o.say = removeSpeechTags(o.say);
-                                console.log("---> calling animate w/ "+JSON.stringify(o));						
-                                var animateTimeStart = new Date();						
-                                request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
-                                    if (err) return next(new Error(body));
-                                    var animateTimeEnd = new Date();
-                                    console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
-                                    if (httpResponse.statusCode >= 400) return next(new Error(body));
-                                    var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
-                                    zlib.unzip(buffer, function (err, buffer) {
-                                        if (err) return next(new Error(err.message));
+                            // pass the lipsync result to animate.
+                            o.key = charAPIKey;
+                            o.zipdata = true;
+                            o.lipsync = lipsyncData;
+                            o.say = removeSpeechTags(o.say);
+                            console.log("---> calling animate w/ "+JSON.stringify(o));						
+                            var animateTimeStart = new Date();						
+                            request.get({url:urlAnimate, qs: o, encoding: null}, function(err, httpResponse, body) {
+                                if (err) return next(new Error(body));
+                                var animateTimeEnd = new Date();
+                                console.log("<--- back from animate - " + (animateTimeEnd.getTime() - animateTimeStart.getTime()));
+                                if (httpResponse.statusCode >= 400) return next(new Error(body));
+                                var buffer = Buffer.from(httpResponse.headers["x-msi-animationdata"], 'base64')
+                                zlib.unzip(buffer, function (err, buffer) {
+                                    if (err) return next(new Error(err.message));
                                         fs.writeFile(targetFile(filebase, "image", o.format), body, "binary", function(err) {
                                             if (err) return next(new Error(err.message));
                                             fs.writeFile(targetFile(filebase, "data"), buffer.toString(), "binary", function(err) {
@@ -195,13 +183,12 @@ app.get('/animate', function(req, res, next) {
                                                 });
                                             });
                                         });
-                                    });
                                 });
                             });
                         });
-                    }
+                    });
                 }
-            });
+            }
         });
     });
 });
@@ -212,26 +199,6 @@ function containsActualSpeech(say) {
     if (!textOnly) return false;
     let hasNonWhitespace = !!textOnly.match(/\S/);
     return hasNonWhitespace;
-}
-
-function loadCatalogIfNecessary(callback) {
-    var timestampNow = (new Date()).getTime();
-    if (!catalog || !catalogTimestamp || catalogTimestamp - timestampNow > CATALOG_TTL) {
-        console.log("---> calling catalog");
-        var catalogTimeStart = new Date();						
-        request.get(urlCatalog + "?key="+charAPIKey, function(err, httpResponse, body) {
-            var catalogTimeEnd = new Date();						
-            console.log("<--- back from catalog - " + (catalogTimeEnd.getTime() - catalogTimeStart.getTime()));
-            if (err) return callback(err);
-            if (httpResponse.statusCode != 200) return callback(new Error(body));
-            catalog = JSON.parse(body);
-            catalogTimestamp = timestampNow;
-            callback(null);
-        });
-    }
-    else {
-        callback(null);
-    }
 }
 
 function doParallelTTS(textOnly, voice, callback) {
@@ -420,22 +387,21 @@ function ssmlHelper(s, c) {
     else return s;
 }
 
-// Catalog lookup 
 
-function characterStyleObject(id) {
-    for (var i = 0; i < catalog.characterStyles.length ; i++)
-        if (catalog.characterStyles[i].id == id)
-            return catalog.characterStyles[i];
-    return null;
-}
-    
-function characterObject(id) {
-    for (var i = 0; i < catalog.characters.length ; i++)
-        if (catalog.characters[i].id == id)
-            return catalog.characters[i];
-    return null;
-}
-
+app.get('/catalog', function(req, res, next) {
+    let o = {key: charAPIKey};
+    console.log("---> calling catalog");
+    var catalogTimeStart = new Date();						
+    request.get({url:urlCatalog, qs: o, encoding: null}, function(err, httpResponse, body) {
+        if (err) return next(new Error(body));
+        var catalogTimeEnd = new Date();
+        console.log("<--- back from catalog - " + (catalogTimeEnd.getTime() - catalogTimeStart.getTime()));
+        if (req.get("Origin")) res.setHeader('Access-Control-Allow-Origin', req.get("Origin"));
+        res.setHeader('content-type', 'application/json');
+        res.write(body);
+        res.end();
+    });
+});
 
 app.listen(3000, function() {
   console.log('Listening on port 3000');

@@ -1,0 +1,9 @@
+{
+  "name": "charapi",
+  "version": "1.0.0",
+  "description": "Media Semantics Character API Reference Implementation (HTML Client)",
+  "dependencies": {
+    "@mediasemantics/character-api-client": "^1.0.0"
+  },
+  "devDependencies": {}
+}

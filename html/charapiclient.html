@@ -4,51 +4,49 @@
 </head>
 <body style="overflow:hidden">
 
-<script src="charapiclient.js"></script>
-
 <div id="myDiv" style="width:250px; height:200px;"></div>
+<br><br>
+<a id="btn1" href="#">dynamicPlay({do:'agree'})</a>
+<br><br>
+<a id="btn2" href="#">dynamicPlay({do:'look-right', say:'Look over here.'})</a>
+<br><br>
+<a id="btn3" href="#">dynamicPlay({say:' <input type="text" id="myInput"/> '})</a>
+<br><br>
+<a id="btn4" href="#">stop()</a>
 
-<script>
+<script type="module">
+import CharacterApiClient from './node_modules/@mediasemantics/character-api-client/character-api-client.js';
+
 // Initialize your character in a div
 var character;
 document.addEventListener("DOMContentLoaded", function() {
-    character = CharApiClient.setupDiv("myDiv", {
-        width: 250,
-        height: 200,
-        // TODO: Replace this with your own endpoint on your own server. 
-        endpoint: "http://localhost:3000/animate",
-        // Character API parameters. TODO: If your api works without authentication, e.g. if your page is accessible without a login, then it is wise 
-        // to *fix* or *limit* as many parameters as you can in your server code, including a background with a logo, if you can, 
-        // in order to minimize the attractiveness of your endpoint for scammers. (CORS helps with this, but it can still be defeated.)
-        character: "SusanHead",
-        // Character version - get this from the character catalog
-        version: "3.0.1",
-        // Character idle pattern - get this from the character catalog
-        idleData: {"blink":["blink"],"normal":["blink","headidle1-3"]},
-        // Increment the 'cache' value if you make changes to the parameters you fix in your server.
-        // Even if you delete your server-side cache, your clients may have images in their client cache. Incrementing the
-        // cache number in the client is a simple way to ensure that neither client or server-cached images are accidentally used.
-        cache: 1
+    character = new CharacterApiClient("myDiv", {width: 250, height: 200, character: "SusanHead",
+       animateEndpoint: "http://localhost:3000/animate",
+       catalogEndpoint: "http://localhost:3000/catalog",
     });
 })
+
+// Commands
+document.getElementById("btn1").addEventListener("click", function() {
+    character.dynamicPlay({do:'agree'});
+});
+document.getElementById("btn2").addEventListener("click", function() {
+    character.dynamicPlay({do:'look-right', say:'Look over here.'});
+});
+document.getElementById("btn3").addEventListener("click", function() {
+    character.dynamicPlay({say:document.getElementById('myInput').value});
+});
+document.getElementById("btn4").addEventListener("click", function() {
+    character.stop();
+});    
 
 // Optionally add some event listeners - you add the listener to the div that holds the character
 document.getElementById("myDiv").addEventListener("characterLoaded", function() {console.log("characterLoaded")});
 document.getElementById("myDiv").addEventListener("autoStart", function() {console.log("autoStart")});
 document.getElementById("myDiv").addEventListener("playComplete", function() {console.log("playComplete")});
 document.getElementById("myDiv").addEventListener("embeddedCommand", function() {console.log("embeddedCommand")});
+document.getElementById("myDiv").addEventListener("scriptCommand", function() {console.log("scriptCommand")});
 </script>
-
-<!-- Sample API calls. Successive dynamicPlay calls are queued up for back-to-back play. Use character.stop() to smooth-stop. -->
-<br><br>
-<a href="javascript:character.dynamicPlay({do:'agree'})">[agree]</a>
-<br><br>
-<a href="javascript:character.dynamicPlay({do:'look-right', say:'Look over here.'})">[look-right] Look over here.</a>
-<br><br>
-<input type="text" id="myInput"/>
-<a href="javascript:character.dynamicPlay({say:document.getElementById('myInput').value})">speak</a>
-(<a href="javascript:character.preloadDynamicPlay({say:document.getElementById('myInput').value})">preload</a>, 
-<a href="javascript:character.stop()">stop</a>)
 
 </body>
 </html>
